@@ -1,0 +1,424 @@
+= Using this editor
+:page-description: How this config editor itself works -- its panes, its drag targets, its validation, where your AI key is kept, and exactly what leaves your machine when you use the AI pane. Written by this project, not by CircleCI.
+
+This page is about *this application*: the visual config editor you are reading
+it in. Everything else in the Reference pane's guide list is CircleCI's own
+documentation, vendored from the source of `circleci.com/docs`. This page is not
+-- it is written and maintained in this editor's own repository, it is not
+official CircleCI documentation, and CircleCI has not reviewed it.
+
+If a statement here disagrees with CircleCI's documentation about what CircleCI
+does, CircleCI's documentation is right and this page has a bug.
+
+[#the-panes]
+== The panes
+
+Five panes, each independently movable and collapsible:
+
+* *Config* -- the YAML source, in a CodeMirror editor. A `Source` / `Compiled`
+toggle switches between what you wrote and the fully-expanded config CircleCI
+actually runs, with orbs resolved and defaults applied. Its header shows the
+open file's name and whether it is saved, unsaved, or unparseable, and carries a
+`Save` button and an `Autosave` switch.
+* *Workflow Graph* -- the active workflow as a directed graph. Job nodes, and
+edges that are the workflow's `requires` relationships. Node positions are
+remembered per workflow; `Re-layout` discards them and lays the graph out again.
+* *Palette* -- draggable and clickable building blocks, grouped as `Executors`,
+`Steps`, `Commands`, `Parameters`, `Contexts`, `Project` and `Orbs`.
+* *Reference* -- two views over the configuration surface. `Keys` is generated
+from the vendored config JSON Schema, so it cannot drift from what this editor
+validates against. `Guides` is CircleCI's prose, plus these two pages about the
+editor.
+* *AI Assistant* -- an optional, bring-your-own-key chat about the open config.
+It is off until you configure a key, and everything else works without it.
+
+A row of layout presets sits in the app bar: `Columns`, `Graph focus` (the
+default), `Editor focus`, `Graph only` and `Editor only`. The Reference pane
+starts collapsed in every preset. Once you rearrange anything the preset row
+gains a `Custom` pill and a `Reset` button; `Reset` returns to the named preset
+you started from, and the named presets themselves are never modified.
+
+[#moving-panes]
+== Rearranging the panes: the Move menu
+
+Every expanded pane's header strip has a `Move` button and a `Collapse` button.
+`Move` opens a menu with two groups:
+
+* `Swap with` -- one entry per other pane. The two panes exchange positions;
+nothing else about the layout changes.
+* `Move to` -- `Left edge`, `Right edge`, `Top edge`, `Bottom edge`. The pane is
+lifted out and re-attached along that edge of the whole window.
+
+*There is no drag-and-drop for panes at all, deliberately.* A drag overlay in
+the style of Windows FancyZones was prototyped and rejected: in the `Columns`
+preset at common window widths a real pane is under 140 pixels wide, which
+leaves an edge drop zone too small to hit reliably. The menu is the only way to
+reach a move, which also means pane rearrangement is fully keyboard-operable
+rather than having a keyboard story bolted on afterwards.
+
+The splitters between panes are keyboard-operable in their own right: focus one
+and use the arrow keys, or `Home` and `End`. A splitter drag will not shrink a
+region below 200 pixels.
+
+[#drag-and-drop]
+== Drag and drop, and the keyboard path
+
+Dragging is a shortcut in this editor, never the only way to do something. Every
+draggable card is a real button that does the same thing on `Enter` or `Space`.
+
+What can be dragged, and where it can be dropped:
+
+[cols="2,3", options="header"]
+|===
+| Dragged from | Dropped on
+
+| Palette, `Steps`
+| A job node in the graph, or a specific position in the inspector's step list
+
+| Palette, `Executors`
+| A job node, or empty canvas to create a job that uses it
+
+| Palette, `Contexts`
+| A workflow job node. Dropping a context on empty canvas is refused, because a
+context belongs to a workflow's job entry and there is nothing to attach it to.
+
+| Orb browser, a job
+| The canvas
+
+| Orb browser, a command
+| A job node, or a position in that job's step list
+
+| Orb browser, an executor
+| A job node
+|===
+
+Inside the graph you can also drag between two job nodes' connector handles to
+create a `requires` dependency, drag a node to reposition it, and drag steps to
+reorder them in the inspector.
+
+The keyboard equivalents:
+
+* Press `Enter` or `Space` on any palette or orb card to insert it, and pick the
+target from the list that appears.
+* Press `Enter` on a job node's connector handle to begin a dependency, then
+`Enter` on another job's connector to finish it, or `Escape` to cancel. A status
+line tells you a connection is pending.
+* Contexts offer a job picker as their non-drag path.
+
+Project environment variables are the one palette entry with no drop target,
+because there is nowhere sensible to drop one. They are offered as `$NAME`
+completions inside `run` command bodies instead.
+
+[#validation]
+== Validation, and what "Fix with AI" does
+
+Problems appear in four places at once, all describing the same set of
+diagnostics:
+
+. A strip pinned under the Config pane, in both the `Source` and `Compiled`
+views. A valid config shows no strip at all.
+. Highlighted lines in the editor itself.
+. A problems banner floating over the Workflow Graph, with each row selecting
+the job it names.
+. A badge in the app bar: `Valid`, `Invalid`, `Checking…`, or an honest
+statement that validation is unavailable.
+
+The strip is a navigator rather than a list: one problem at a time, with `‹ Prev`
+and `Next ›`, a counter, and the verbatim compiler output behind a disclosure.
+This is on purpose -- the reference pane and the diagnostics strip both avoid
+adding a second scrolling region to a pane that already has one.
+
+A badge on each problem says where the verdict came from: `CircleCI compiler`
+when CircleCI compiled the config, or `Local check` when it did not. The
+distinction matters. Without a `CIRCLE_TOKEN` this editor falls back to its own
+offline checks, and a config those checks are happy with can still fail to
+compile. The strip says so rather than reporting a clean bill of health it cannot
+give.
+
+Where a correction is unambiguous -- a misspelled key that is within a small
+edit distance of exactly one real key, with no tie -- the strip offers it
+directly. Where it is not, it says so instead of guessing.
+
+*`Fix with AI` sends nothing.* It writes a prompt describing the problem into
+the AI pane's message box and stops there. You read it, edit it if you want, and
+press `Send` yourself. It costs no tokens until you do, and even then any config
+change arrives as a proposed edit you approve as a diff -- the assistant cannot
+write to your config, and approving a diff still does not write to disk. Saving
+remains a separate, explicit step.
+
+[#config-policies]
+== Config policies: a second, separate verdict
+
+Your organization may have *config policies* -- rules, written in Rego and
+evaluated by CircleCI, that decide whether a pipeline is allowed to run with a
+given config. Whether a config *compiles* and whether it is *allowed* are two
+independent questions, so this editor answers them separately and never merges
+them into one indicator. A config can compile perfectly and still be refused; a
+config that does not compile never reaches the policy engine at all.
+
+*The verdict is a badge*, in the Config pane's badge row beside `Unsaved`/`Saved`
+and `Valid`, hoverable for one summary sentence:
+
+`Policy pass`:: Rules were evaluated and none of them failed.
+`Policy soft fail`:: One or more rules flagged the config. Soft failures are
+recorded and shown, but they do *not* block a pipeline. This is a real third
+answer, and it is rendered as neither a pass nor a refusal.
+`Policy hard fail`:: A blocking rule failed. CircleCI would refuse to run a
+pipeline with this config.
+`Policy engine error`:: The engine could not reach a decision. Not a pass.
+`No policies to check`:: CircleCI answered `PASS`, but the organization has no
+enabled rules in this policy context -- so the config was checked against
+nothing, and the answer says nothing about it.
+`Policy: not checked`:: Nothing has been checked, or a check could not be made
+-- no `CIRCLE_TOKEN`, no organization, an organization whose plan does not
+include config policies, a config the engine could not parse, or the local text
+does not even parse as YAML (the policy engine parses the file itself, so it is
+never asked). The badge's tooltip says which. *This is never shown as "no
+violations":* a false all-clear on a security control would be worse than no
+control at all.
+`Policy check out of date`:: A verdict exists, but the file has been edited
+since. A fresh check runs automatically -- see below -- so this clears itself a
+moment after you stop typing.
+
+*Checking runs automatically, in the background*, on the same debounce as
+compile validation -- roughly a second after you stop typing. There is no
+button: the two checks are independent (whichever answers first is shown
+first), and a check is skipped outright while the text does not parse locally,
+or when the text on screen already has an answer or one already in flight, so
+this never becomes a request per keystroke.
+
+*The full rule, its reason, and "Fix with AI" live in the reference pane's
+`Policies` tab* -- not in a strip, a modal, or an expanding panel in the editor.
+Open the reference pane and switch to `Policies` to see, for every violation:
+the exact rule name, the policy author's own words in full (never truncated,
+never reworded), whether it blocks a pipeline, and its location when one can be
+proven. Where the reason names something this editor can find in your config --
+a job, an executor, an orb reference -- the violation also gets a line number in
+that tab, marks that line in the editor, and highlights the job on the Workflow
+Graph. Where it does not, it says `Location unknown` rather than pointing at a
+line it guessed: a policy reason is prose written by whoever wrote the policy
+and contains no line number, so a plausible-looking guess would be a lie with a
+cursor on it.
+
+The same tab also lists every rule that was actually evaluated and which of
+them fired, and offers `Fix with AI` on each violation -- seeding the AI pane's
+message box with the rule and its reason, exactly as `Fix with AI` already does
+for a compile error, and never sending anything until you press `Send` yourself.
+Before a check has run it says so rather than showing an empty list.
+
+*The full policy source is not fetched.* `circleci policy fetch` returns the
+Rego source of the whole bundle, but that call requires organization-admin-level
+access and answers HTTP 403 for most org members -- a view built on it would be
+empty for almost everyone. This editor does not call it. What the `Policies` tab
+shows -- the rule name and the reason CircleCI's own decision returned -- is
+established to be the most complete answer available to most users; ask an
+organization admin if you need the rule's full source.
+
+*This editor only reads.* It cannot create, edit or delete a policy: the
+CircleCI CLI's `policy push` has deliberately no counterpart here, under any
+flag.
+
+Two honest caveats about fidelity:
+
+* A check is evaluated with whatever pipeline metadata this editor actually has
+(the project id and branch the CircleCI CLI passed it). A rule scoped to a
+particular project or branch cannot fire without those, so the `Policies` tab
+states which were sent -- a rule's silence here is not evidence it would be
+silent on CircleCI.
+* When CircleCI runs policies itself it also supplies the config after
+compilation, as `input._compiled_`. This check sends your source config, exactly
+as `circleci policy decide` does, so a rule written against `input._compiled_`
+may not fire here.
+
+[#the-ai-key]
+== Where the AI key lives, and where it does not
+
+The AI pane needs a key from an AI provider, which you supply. It is stored
+outside this repository and outside the browser:
+
+* On macOS, in your login Keychain.
+* On Linux, in the Secret Service keyring, when one is available.
+* Otherwise -- a headless Linux box, or Windows -- in a file under your config
+directory with owner-only permissions. On Windows those permissions are an
+approximation of the POSIX ones, not the same guarantee.
+
+An environment variable overrides whatever is stored: `VCE_AI_KEY_ANTHROPIC` for
+Anthropic, and the same shape for any other provider. A key exported for some
+*other* program is deliberately never picked up -- `ANTHROPIC_API_KEY` is not
+read, because exporting a key for one tool is not consent to spend it in
+another.
+
+There is a command-line path, if you prefer it to the settings form:
+
+[source,shell]
+----
+circleci-editor ai status
+circleci-editor ai set-key anthropic
+circleci-editor ai remove-key anthropic
+----
+
+`set-key` prompts with echo off and has no flag to pass a key on the command
+line, so a key cannot end up in your shell history. `status` cannot print a key
+-- not even a truncated prefix.
+
+*No endpoint of this editor's local server ever returns the key, so the page's
+JavaScript never receives one.* The one honest caveat: the key travels *inbound*
+once, from the settings form to the local host, when you first enter it. The form
+says so. After that the host holds it and proxies provider requests itself; the
+browser only ever learns whether a key is configured, never what it is. The
+local server speaks plain HTTP on loopback, which is exactly why nothing
+readable is put there.
+
+[#what-is-sent]
+== What leaves your machine
+
+Nothing, until you ask for something that requires it.
+
+* Editing, the graph, saving, the `Keys` reference and these guides all work
+with no network and no token.
+* Validation, orb search and the project's context list call CircleCI, and need
+a `CIRCLE_TOKEN`.
+* *Checking config policies posts the contents of the open config to CircleCI*,
+to be evaluated against your organization's policy bundle. This is a separate
+request from validation, to a separate endpoint, and -- unlike validation --
+there is no button for it: it runs automatically in the background, on the same
+debounce as compile validation, a moment after you stop typing. It never fires
+on text that does not parse locally, and it never re-asks a question it already
+has an answer for. Nothing is written: the decision is read-only.
+* *Running the config posts it to CircleCI and starts a real pipeline.* This is
+the only thing this editor does that spends your credits, and the only thing it
+does that the rest of your organization can see: the run appears in the CircleCI
+dashboard like any other pipeline, and is not marked as a test. It happens only
+after a confirmation that names the project, the branch, and whether it is
+running the version in the editor or the version on disk -- and on your
+project's default branch you have to type the branch name to confirm, because an
+uncommitted config can run on a protected branch without passing through code
+review. Nothing runs on save, on validation, or in the background. Afterwards
+this editor hands you a link and stops: it does not follow the pipeline, and the
+`Run` strip says so, so a missing spinner never means "still going".
+* The AI pane sends config files to the AI provider, and only when you press
+`Send`. What exactly it sends is set out in the next section.
+
+[#what-the-ai-pane-sends]
+=== What the AI pane sends, and to whom
+
+This is the disclosure in full, because it is the one place in this editor where
+the contents of your files go to a third party rather than to CircleCI.
+
+*It goes to Anthropic.* Anthropic is the only AI provider this editor ships
+support for, so a chat request is an HTTPS request to `api.anthropic.com`,
+authenticated with the key *you* configured (see
+<<the-ai-key,Where the AI key lives>>). It is made by this editor's local host
+process, not by the page in your browser, which is why the browser never needs
+to hold the key. *CircleCI does not receive any of it*, and neither does this
+project -- there is no telemetry, no proxy of ours in the path, and no
+CircleCI-owned credential involved.
+
+*Nothing is sent until you send it.* There is no background, automatic or
+as-you-type request. Specifically:
+
+* With no API key configured, the pane is inert and makes no provider requests
+at all.
+* Typing in the message box sends nothing. Pressing `Send` (or `Enter`) is the
+action that sends, and it sends exactly once.
+* `Fix with AI` -- in the diagnostics strip for a compile error, or in the
+reference pane's `Policies` tab for a policy violation -- writes a prompt into
+the message box and stops. Nothing is sent until you read it and press `Send`
+yourself.
+* A reply that proposes a config change is shown to you as a diff and applied
+only if you approve it -- and approving still does not write to disk.
+
+*What one message carries:*
+
+. *The open config file, in full* -- its text and its path.
+. *The other YAML files this editor indexed*, as read-only context, in path
+order. That index is the same one the file switcher shows: `.yml` and `.yaml`
+files under the directory this editor opened, walked recursively. Nothing else in
+your repository is read, indexed or sent -- not source files, not `.env` files,
+not anything outside that directory, whatever its extension. Files are included
+until roughly 20,000 tokens' worth (about 80KB) have been used; a file that would
+exceed that, or that is over the host's 2 MiB per-file cap, is *named* to the
+assistant as present-but-not-sent, and its contents are not sent. Only the open
+config file can be changed by a proposed action; the rest is context the
+assistant can answer questions about but cannot edit. A sibling that this
+editor's own classifier determined is *not* a CircleCI config -- a `goss.yaml`
+a job runs, say, or a Docker Compose file -- is still sent in full (it is genuinely
+useful context), but labelled as such, with the same reason the file switcher
+shows for it, so the assistant does not reason about it as though it were a
+pipeline it could propose an edit to.
+. *Things already derived from that config* -- the job and workflow names, and
+the validation output currently shown in the diagnostics strip.
+. *The config-policy rules currently failing against this config*, when a
+background check (see <<config-policies,Config policies>>) has found any and
+the file has not changed since -- each one's rule name, its reason in full,
+and whether it blocks a pipeline, exactly as the `Policies` tab shows them.
+*Rule text is org configuration*: it may name internal services, teams or
+standards your organization writes policies about, so sending it to Anthropic
+is disclosed here for the same reason the config itself is. It is sent with
+every message once a violation is current, not only after `Fix with AI` --
+that button seeds a prompt from the same two facts, but the standing context
+is present regardless, so the assistant can help even when you did not start
+from that button.
+. *The conversation so far*, so a follow-up question makes sense. Provider-side
+notices this editor generated itself are excluded, because neither side of the
+conversation said them.
+
+Nothing else. Not your `CIRCLE_TOKEN`, not your git history, not the contents of
+any pane other than the config.
+
+If you have configured the optional docs MCP server in the AI pane's settings,
+its URL is passed to Anthropic along with the request, and Anthropic connects to
+that server itself -- your config is not sent to it from here. Signing that
+server in is the exception: the OAuth flow runs from this host, and talks to the
+server you named.
+
+This editor no longer prints a per-message summary of the above in the pane
+itself. That summary was removed deliberately: it is standing behaviour that does
+not change from message to message, and this page is where standing behaviour
+belongs.
+
+[#file-switcher]
+== The `.circleci` file switcher
+
+The app bar lists the config files in the directory it opened. Because
+`.circleci` directories routinely contain YAML that is not a CircleCI config --
+`goss` test files are the usual example -- the switcher classifies each file and
+shows the configs first.
+
+Classification is *structural, and never about validity*. A file counts as a
+config when it has a top-level `version` of `2`, `2.0` or `2.1`, or at least one
+top-level `jobs`, `workflows`, `orbs`, `executors`, `commands` or `setup`. Key
+matching is exact: `goss` files carry a top-level `command` (singular) where
+CircleCI has `commands` (plural), and that single character is the whole
+difference. GitHub Actions workflows and Docker Compose files are recognised and
+excluded before the CircleCI test runs. An invalid config is still a config --
+being broken is the normal state of a file you are in the middle of editing, and
+a switcher that hid your file the moment you mistyped a key would be useless.
+
+*Nothing is ever dropped.* Files that did not classify as configs are collapsed
+behind a `Show N other` button, drawn with a dashed border when revealed, and
+each one tells you why it was filtered when you hover it. Opening one keeps it
+visible. If you open a non-config, the graph pane says plainly that there is no
+workflow graph to show, and why. The directory walk is recursive and has no
+depth limit.
+
+[#themes-and-keyboard]
+== Themes and keyboard
+
+The app bar's rightmost control chooses `Light`, `Dark` or `System`. `System`
+follows your operating system and changes with it. The choice is remembered.
+
+Keyboard shortcuts that exist:
+
+* `Ctrl/Cmd+Z` and `Ctrl/Cmd+Shift+Z` undo and redo *graph* edits. They are
+scoped to the Workflow Graph pane, so they never fight the Config editor's own
+undo.
+* `Escape` in the graph clears the selection and cancels a pending connection.
+* `Enter` on a job connector starts or finishes a dependency edge.
+* `Enter` or `Space` on a palette or orb card inserts it.
+* `Mod+Space` in the Config editor re-opens completions.
+* Arrow keys, `Home` and `End` move a focused splitter.
+* `Escape` closes any menu and returns focus to the button that opened it.
+
+There is no command palette, and no global save shortcut: saving is the `Save`
+button, or the `Autosave` switch beside it.

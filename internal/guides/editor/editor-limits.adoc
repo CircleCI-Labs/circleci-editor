@@ -1,0 +1,153 @@
+= Limits and known gaps
+:page-description: What this config editor deliberately does not do, and why. This project's own honesty list, not CircleCI documentation.
+
+This page is about *this application*, not about CircleCI, and it is written by
+this project rather than vendored from CircleCI's documentation. Its whole
+purpose is to state plainly what the editor cannot do, so a missing feature reads
+as a known limit rather than as something you are failing to find.
+
+The rule this list follows: *an absent feature is a gap; a feature that is
+subtly wrong is the tool lying to you.* Where the two were the only options, this
+editor chose the gap and wrote it down here.
+
+[#orb-filters]
+== There is no partner orb filter
+
+The orb browser filters by `All`, `Certified` and `Private`. The public orb
+registry also offers a "Partner" filter, and this editor does not, for a concrete
+reason: *CircleCI's API does not expose partner status.*
+
+The orb-package endpoint returns an orb's name, whether it is private, and
+whether it is listed -- and nothing else. Every plausible filter parameter for
+partner, tier or publisher is silently ignored rather than rejected, and the
+GraphQL orb type has no partner, tier or publisher field either. The registry's
+own "Certified & Partner" control is a search-index filter over an index this
+application does not use.
+
+So partner status could only be guessed at. A filter that is absent is a missing
+feature; a filter that mislabels a third party's relationship with CircleCI is
+worse. For the same reason there is no Partner badge on orb results, and no
+"Community", "Public" or "Popular" filter.
+
+[#resource-classes]
+== Resource classes come from the schema, not from your plan
+
+The resource-class field offers every value the CircleCI config schema allows --
+including Arm, macOS, Windows and GPU classes. It does not know which of them
+*your organization* can actually use, and the field says so where you choose one.
+
+This is not an oversight. No CircleCI API exposes resource-class entitlements;
+several candidate endpoints were tried and none of them answer the question. A
+config using a class your plan does not include is accepted here and will fail
+when CircleCI runs it.
+
+[#project-context]
+== Context and environment-variable values are never shown
+
+The project panel is read-only. There is no path in this editor that creates,
+edits or deletes a context, a context variable, or a project environment
+variable -- those live in CircleCI's web UI.
+
+More importantly, it cannot *show* you a secret, because CircleCI does not return
+one to anybody:
+
+* For a context variable, all that exists is a four-character fragment. It is
+labelled as a preview, never as a value, and it is clamped again on the way to
+the screen -- so even if CircleCI widened that field, this editor would still not
+become a way to read a secret.
+* That fragment is not part of CircleCI's published API description, so it is
+treated as optional. When it is absent you see "no preview", never a
+convincing-looking empty value.
+* Project environment variables are *names only*.
+
+There is no reveal control, no copy-value control, and no hover-to-expand.
+
+[#yaml-fidelity]
+== What is preserved when the editor writes YAML
+
+Every edit this editor makes is a surgical change to the parsed document, never a
+regeneration of the file from an internal model. Your comments, key order,
+quoting style and formatting survive. This is the single most important
+constraint in the codebase, and it is why untouched parts of the file are written
+back as their original bytes rather than re-rendered.
+
+Two residual gaps, both known and both cosmetic:
+
+* A block *moved between nesting levels* -- extracting a shared executor or
+command, for example -- is re-rendered at its new location rather than keeping
+its original formatting. Reordering at the same level is a pure move and keeps
+everything.
+* Extra padding before an inline comment on the *one line you edited* is not
+preserved. That padding is discarded when the file is parsed, so no writing
+option could restore it.
+
+Before saving, the editor re-parses its own output and checks that it still means
+the same thing; if it does not, it falls back to a plain re-render rather than
+writing something it cannot vouch for.
+
+The assistant is held to the same rule: it cannot emit config text at all. It may
+only propose a structured action drawn from a fixed vocabulary, which you approve
+as a diff. Approving a diff changes the in-memory document; writing to disk is
+still the separate `Save` step.
+
+[#no-running]
+== The editor authors configs; it does not run them
+
+There is no way to trigger a pipeline, rerun a workflow, cancel one, or read
+logs, artifacts, test results or insights from here. That is a deliberate
+boundary: author and verify in this editor, observe in CircleCI's web UI, which
+is better at it and already exists. Where a link out is useful, the editor links
+to your project there.
+
+[#tokens]
+== What needs a CIRCLE_TOKEN
+
+Without a `CIRCLE_TOKEN`, this editor still edits, draws the graph, saves,
+serves the schema-derived `Keys` reference and serves these guides -- all with no
+network at all.
+
+What a token buys:
+
+* Validating and compiling the config against CircleCI's own compiler. Without
+it the validity badge reports *unavailable* rather than valid or invalid, and you
+get this editor's weaker offline checks, badged as such.
+* Searching the orb registry and reading orb source. Without it the browser
+reports the registry as unavailable, rather than as empty.
+* The project's context list, environment-variable names and project identity.
+
+The AI pane is unrelated to this and uses its own provider key.
+
+[#orb-executor-params]
+== Orb executor parameters: required ones, once
+
+Dragging an orb executor onto a job collects that executor's *required*
+parameters in a form at the moment you insert it. Optional parameters are not
+offered, and there is no inspector field for changing a value you already
+inserted. Edit the YAML directly for either.
+
+[#schema-freshness]
+== The config schema has no automatic refresh
+
+The `Keys` view, the inspector's field lists and the offline checks all come from
+one vendored copy of CircleCI's config JSON Schema, pinned by checksum. Because
+it is the same copy validation uses, the reference cannot describe a key
+differently from how the editor treats it.
+
+But there is no background update for it, unlike the prose guides. It is current
+as of the release you are running and no fresher, so a key CircleCI added very
+recently may be missing from the `Keys` view.
+
+[#guides-freshness]
+== These guides can be up to seven days behind
+
+The CircleCI pages in this pane are vendored into the binary, so they work
+offline and on a first launch. A background check refreshes them from CircleCI's
+documentation source at most once a week, and never blocks the pane on the
+network.
+
+The footer under every guide states which upstream commit the text came from and
+when that commit was made, whether an update check is in flight, and whether the
+last one failed. If it says the copy is older than you expected, that is the
+honest answer rather than a stale one presented as current. The two pages about
+*this editor* are not fetched at all -- they ship with the binary and change only
+when the editor does.
