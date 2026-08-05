@@ -196,6 +196,19 @@ type pendingFetch struct {
 	done   chan struct{}
 	result Result
 	err    error
+
+	// waiters counts the callers that joined this fetch rather than starting
+	// one of their own. Guarded by Cache.fetchMu.
+	//
+	// Only a test reads it, via export_test.go's PendingWaiters. It exists
+	// because "every concurrent caller shares one request" is otherwise
+	// untestable without a sleep: a barrier that proves each goroutine was
+	// *scheduled* does not prove it reached fetchShared, and the difference is
+	// not academic -- an earlier version of that test synchronised on
+	// goroutine start and duly reported three requests on a loaded macOS
+	// runner, failing on the scheduler rather than on this cache. Waiting for
+	// waiters to reach n-1 synchronises on the thing being asserted.
+	waiters int
 }
 
 // Cache is a small, disk-persisted cache of one CircleCI catalog: the
@@ -272,6 +285,7 @@ func (c *Cache) Refresh(ctx context.Context) (Result, error) {
 func (c *Cache) fetchShared(ctx context.Context) (Result, error) {
 	c.fetchMu.Lock()
 	if existing := c.pending; existing != nil {
+		existing.waiters++
 		c.fetchMu.Unlock()
 		<-existing.done
 		return existing.result, existing.err

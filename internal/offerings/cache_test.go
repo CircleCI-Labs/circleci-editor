@@ -25,8 +25,10 @@ package offerings_test
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 
 	"gotest.tools/v3/assert"
 
@@ -43,22 +45,32 @@ type fakeFetcher struct {
 	err    error
 	calls  int
 
-	// unblock, when non-nil, is read once before returning -- lets a test
-	// hold the fetch open until every concurrent caller has actually started
-	// (see TestCache_ConcurrentFetches_ShareOneRequest), rather than relying
-	// on goroutines merely being *launched* concurrently. Without it, an
-	// instant fake fetch can complete and clear Cache.pending before a
-	// slow-to-schedule goroutine even reaches fetchShared, which would make
-	// that goroutine start a second, genuinely sequential fetch -- a real
-	// possible outcome of this cache's design, not a bug, but not what that
-	// test means to exercise. Mirrors internal/dockerhub's fakeLister.
+	// unblock, when non-nil, is read once before returning -- it lets a test
+	// hold the fetch open for as long as it needs (see
+	// TestCache_ConcurrentFetches_ShareOneRequest). While the fetch is held
+	// open, Cache.pending cannot be cleared, so every caller that reaches
+	// fetchShared must join it; that is what makes "exactly one request"
+	// assertable rather than merely likely. Mirrors internal/dockerhub's
+	// fakeLister.
 	unblock chan struct{}
+
+	// entered, when non-nil, receives once as the fetch begins, so a test can
+	// wait for the fetch to be genuinely in flight before acting on it. The
+	// send is non-blocking: a second call would itself be the failure the test
+	// is looking for, and must not deadlock here and hide it.
+	entered chan struct{}
 }
 
 func (f *fakeFetcher) GetOfferings(ctx context.Context) (*circleci.Offerings, error) {
 	f.mu.Lock()
-	unblock := f.unblock
+	unblock, entered := f.unblock, f.entered
 	f.mu.Unlock()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+	}
 	if unblock != nil {
 		select {
 		case <-unblock:
@@ -221,28 +233,39 @@ func TestCache_DiskPersistence_SurvivesRestart(t *testing.T) {
 
 func TestCache_ConcurrentFetches_ShareOneRequest(t *testing.T) {
 	unblock := make(chan struct{})
-	fetcher := &fakeFetcher{result: sampleOfferings(), unblock: unblock}
+	entered := make(chan struct{}, 1)
+	fetcher := &fakeFetcher{result: sampleOfferings(), unblock: unblock, entered: entered}
 	cache := offerings.New(fetcher, "")
 
 	const n = 10
-	var ready sync.WaitGroup
-	ready.Add(n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+	for range n {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ready.Done()
 			_, err := cache.Get(context.Background())
 			assert.NilError(t, err)
 		}()
 	}
-	// Waits for every goroutine to have at least started before releasing the
-	// fetch -- see fakeFetcher.unblock's own doc comment for why this matters:
-	// without it, an instant fetch can finish (and clear Cache.pending) before
-	// a slow-to-schedule goroutine ever reaches fetchShared, making the
-	// "exactly one fetch" assertion flaky rather than false.
-	ready.Wait()
+
+	// One caller wins the race to start the fetch and is now parked inside the
+	// fake fetcher, so the fetch cannot complete, so Cache.pending cannot be
+	// cleared, so every remaining caller that reaches fetchShared is obliged
+	// to join it. Waiting for all n-1 to have *actually joined* -- rather than
+	// for them to have merely been scheduled, which is what an earlier version
+	// of this test did -- is what makes the assertion below deterministic
+	// rather than a statement about how busy the machine is.
+	<-entered
+	deadline := time.Now().Add(30 * time.Second)
+	for cache.PendingWaiters() < n-1 {
+		if time.Now().After(deadline) {
+			joined := cache.PendingWaiters()
+			close(unblock) // Let the parked goroutines finish, then report.
+			wg.Wait()
+			t.Fatalf("only %d of %d callers joined the in-flight fetch", joined, n-1)
+		}
+		runtime.Gosched()
+	}
 	close(unblock)
 	wg.Wait()
 

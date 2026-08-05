@@ -35,6 +35,15 @@
 # specifically to preserve every individual Conventional Commit on main.
 # Multi-parent commits are not PR squash subjects and were never meant to
 # satisfy this format.
+#
+# The root commit is excluded for the same reason, and only matters before the
+# first tag exists (after that, the range starts at the tag). This repository's
+# root is GitHub's own "Initial commit", created by the New Repository button
+# with a stub README and a licence: it predates the project, it is nobody's PR,
+# and there is no release it could be silently dropped from. Failing on it
+# would make this check unpassable on a fresh repository until someone rewrote
+# a commit they did not author -- a worse outcome than the one being guarded
+# against.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,6 +66,17 @@ else
   range="${last_tag}..HEAD"
 fi
 
+# Excluded per the root-commit note in this script's header. Passed to git log
+# as ^<sha>, which is a no-op once a tag exists and the range no longer reaches
+# back this far. A repository without a root commit cannot exist, but an empty
+# value here would become a bare "^" and break the invocation, so the exclusion
+# is only added when one was actually found.
+root_commit="$(git rev-list --max-parents=0 HEAD 2>/dev/null | tail -n 1 || true)"
+exclusions=()
+if [ -n "${root_commit}" ]; then
+  exclusions+=("^${root_commit}")
+fi
+
 failed=0
 while IFS= read -r subject; do
   [ -z "${subject}" ] && continue
@@ -65,7 +85,7 @@ while IFS= read -r subject; do
   fi
   echo "NOT A CONVENTIONAL COMMIT: ${subject}" >&2
   failed=1
-done < <(git log --no-merges --format='%s' "${range}")
+done < <(git log --no-merges --format='%s' "${range}" "${exclusions[@]+${exclusions[@]}}")
 
 if [ "${failed}" -ne 0 ]; then
   cat >&2 <<EOF
