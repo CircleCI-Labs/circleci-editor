@@ -1,0 +1,6 @@
+# Default owners for everything in this repository.
+#
+# CircleCI Labs projects come out of Field Engineering rather than a product
+# team, so review lands with the people who build and run this one. See the
+# Disclaimer in README.md for what that means for support expectations.
+* @james-crowley

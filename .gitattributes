@@ -1,0 +1,53 @@
+# Normalise ordinary source files. This must come FIRST: in gitattributes the
+# last matching pattern wins, so the byte-exact exemptions below would be
+# overridden if this were at the bottom.
+* text=auto
+
+# Files whose exact bytes are part of the contract must never have their line
+# endings rewritten on checkout. Git's autocrlf converts LF to CRLF on Windows
+# by default, which silently changes a file's checksum and content length.
+#
+# This was not theoretical: TestSchemaChecksum passed on Linux and macOS and
+# failed only on Windows, where the vendored schema was checked out with CRLF
+# and hashed to 92e35786… instead of 7e3d291e… -- confirmed by hashing a
+# CRLF-converted copy locally and getting the same value CI reported.
+
+# Vendored verbatim from an upstream release and served to clients as-is. Its
+# checksum is pinned by internal/schema's TestSchemaChecksum, and
+# CONTRIBUTING.md's third-party attributions claim it is unmodified, so any
+# conversion would make that claim false.
+internal/schema/schema.json -text
+
+# Golden fixtures for the YAML round-trip tests. The whole point of those tests
+# is that parsing and re-serialising a config returns the same bytes, which
+# cannot hold if a fixture's line endings differ from what the YAML library
+# emits. These currently only run on Linux in CI, so a Windows contributor
+# would be the first to discover it.
+web/src/fixtures/*.yml -text
+web/src/fixtures/orbs/*.yml -text
+
+# Vendored verbatim from circleci/circleci-docs and rendered in the reference
+# pane (issue #104, widened to twenty pages by #176). internal/guides's
+# TestSnapshotChecksums pins a SHA-256 per file and this project's third-party
+# attributions (CONTRIBUTING.md) claim they are unmodified, so a CRLF
+# checkout would both break the build and make that claim false -- the
+# identical failure mode internal/schema/schema.json hit above, and
+# it recurred here on the Windows CI job before this line existed (job-group.yml
+# hashed to 865133f0… instead of 1f871ebe…). The parser itself tolerates CRLF
+# (see splitLines); the checksum cannot, and the checksum is the part that makes
+# the snapshot auditable.
+#
+# The recursive `**` already covers everything #176 added -- five new page
+# directories and eleven new partials -- because the pattern matches paths under
+# the directory rather than a list of files. Confirmed rather than assumed:
+# `git check-attr text -- <path>` reports `unset` for each new file.
+internal/guides/snapshot/** -text
+
+# This project's *own* documentation about this editor (issue #176), parsed by
+# the same AsciiDoc parser as the vendored snapshot. It is neither checksummed
+# nor third-party, so a CRLF checkout could not falsify a provenance claim here
+# -- but the *parser* is shared, so pinning the bytes keeps a platform-specific
+# parse difference off the table for our content too. That makes "everything
+# internal/guides parses is byte-identical on every platform" one rule rather
+# than two, which is the version of it someone will still be relying on later.
+internal/guides/editor/** -text

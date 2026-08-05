@@ -1,0 +1,7 @@
+# Fixture YAML files are golden test data representing arbitrary
+# hand-authored CircleCI configs (see roundtrip.test.ts) -- they must not
+# be rewritten to this project's own code style. `*.yml` alone only matched
+# this directory, not `orbs/`, so `orbs/act.yml` and `orbs/node.yml` were
+# silently reformatted anyway -- caught while auditing oxfmt's settings for
+# issue #96.
+src/fixtures/**/*.yml

@@ -1,0 +1,120 @@
+/*
+ * Self-hosted Inter + IBM Plex Mono (issue #69). Previously `--font-sans`/
+ * `--font-mono` (styles.css) only *named* these fonts and fell back to
+ * whatever system font a given machine had -- fine on a CircleCI laptop
+ * with Inter pre-installed, but everywhere else the app silently rendered
+ * as generic system chrome (Roboto/Segoe UI/etc.) instead of actually
+ * looking like CircleCI. Bundling the woff2 files makes the branded
+ * typeface load unconditionally, same as `app.circleci.com` itself does.
+ *
+ * Scope, deliberately narrow -- the Go host `go:embed`s this app's entire
+ * built `dist/` into its binary (`internal/webassets`), so every byte here
+ * ships in the CLI plugin permanently, not just on first page load:
+ *
+ *  - Latin only. `@fontsource/inter`'s per-weight CSS (e.g. `400.css`)
+ *    covers seven Unicode subsets -- latin, latin-ext, cyrillic,
+ *    cyrillic-ext, greek, greek-ext, vietnamese -- as separate woff+woff2
+ *    files apiece; importing it wholesale would pull ~30 files per weight
+ *    into the embedded binary for scripts this English-only developer tool
+ *    never renders. Text outside the Latin range still displays correctly,
+ *    it just falls through to this app's existing system-font fallback
+ *    stack (see --font-sans/--font-mono in ../styles.css) exactly as it did
+ *    before self-hosting -- no regression, just no bundled glyphs for it.
+ *  - woff2 only, no woff fallback. Every browser this app targets (any
+ *    Chromium/Firefox/Safari recent enough to run Vite's target ES) has
+ *    supported woff2 since 2016; the woff sibling `@fontsource` ships
+ *    alongside each woff2 is dead weight here.
+ *  - Normal style only, no italics -- `grep -rn italic src --include=*.tsx`
+ *    finds zero usage anywhere in this app.
+ *  - Three weights per family: 400 (body/default), 500 (`font-medium`),
+ *    600 (`font-semibold`) -- confirmed by
+ *    `grep -rohE "font-(thin|extralight|light|normal|medium|semibold|bold|
+ *    extrabold|black)" src --include=*.tsx | sort -u`, which finds only
+ *    font-medium and font-semibold in use beyond the unweighted default.
+ *
+ * `unicode-range` is copied verbatim from @fontsource's own `-latin-`
+ * (non-`-ext`) block per weight, not hand-rolled, so the browser's own
+ * subsetting logic matches upstream exactly.
+ *
+ * Total: 6 files, ~117KB (measured via `ls -la` on the referenced woff2s
+ * in node_modules/@fontsource/*\/files/ at pnpm-install time) -- see the PR
+ * description for the before/after `dist/` size this added.
+ */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('@fontsource/inter/files/inter-latin-400-normal.woff2')
+    format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('@fontsource/inter/files/inter-latin-500-normal.woff2')
+    format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('@fontsource/inter/files/inter-latin-600-normal.woff2')
+    format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2')
+    format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2')
+    format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2')
+    format('woff2');
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212,
+    U+2215, U+FEFF, U+FFFD;
+}

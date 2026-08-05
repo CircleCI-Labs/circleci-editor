@@ -1,0 +1,146 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":dependencyDashboard",
+    ":semanticCommits"
+  ],
+
+  // Renovate is adopted deliberately, not with its defaults. Three things
+  // about this repository make config:recommended alone wrong: two version
+  // pins here are load-bearing rather than incidental, one of them is
+  // duplicated across two files that must not drift apart, and every PR
+  // title has to satisfy pr-title-lint because release-please parses it.
+
+  "timezone": "America/New_York",
+  "schedule": ["before 6am on monday"],
+  "prConcurrentLimit": 4,
+  "prHourlyLimit": 2,
+  "rebaseWhen": "conflicted",
+
+  // Deliberately off. The owner's instruction is that flagged issues get
+  // resolved, which means seen -- so an automerged PR would land without
+  // anyone having looked, even with branch protection enforcing the status
+  // checks.
+  "automerge": false,
+
+  "dependencyDashboard": true,
+  "dependencyDashboardTitle": "Dependency dashboard",
+
+  "vulnerabilityAlerts": {
+    // Security updates bypass the weekly schedule and land as fix(deps) so
+    // release-please puts them in the changelog where a user can see them.
+    // No `prPriority` here: it's only a valid `packageRules` field (Renovate
+    // rejects it elsewhere), and it would be redundant even if it were
+    // allowed -- Renovate's own branch-sort logic always orders
+    // vulnerability-alert branches ahead of everything else before it ever
+    // looks at prPriority, so this had no effect beyond the warning it drew.
+    "enabled": true,
+    "schedule": ["at any time"],
+    "semanticCommitType": "fix",
+    "labels": ["security"]
+  },
+
+  // chore(deps) for routine bumps: pr-title-lint accepts it and
+  // release-please deliberately keeps chore out of the changelog, so a
+  // release note is not 40 lines of dependency churn. Security fixes
+  // override this above.
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+
+  "packageRules": [
+    {
+      // Group by ecosystem so a quiet week is one or two PRs, not fifteen.
+      "matchManagers": ["gomod"],
+      "groupName": "Go dependencies"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["devDependencies"],
+      "groupName": "web dev dependencies"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchDepTypes": ["dependencies"],
+      "groupName": "web dependencies"
+    },
+    {
+      // The Go toolchain is pinned exactly (go 1.26.0) to match CI's
+      // executor. A bump changes what every contributor and every CI job
+      // compiles with, so it gets its own PR and never rides along in a
+      // group.
+      "matchManagers": ["gomod"],
+      "matchDepNames": ["go", "toolchain"],
+      "groupName": null,
+      "labels": ["toolchain"],
+      "minimumReleaseAge": "14 days"
+    },
+    {
+      // Node and pnpm are pinned via Volta and packageManager for the same
+      // reason. Same treatment.
+      "matchManagers": ["npm"],
+      "matchDepNames": ["node", "pnpm"],
+      "groupName": null,
+      "labels": ["toolchain"],
+      "minimumReleaseAge": "14 days"
+    },
+    {
+      // golangci-lint is the one dependency here with a known,
+      // twice-observed failure mode: a version other than CI's pin reports
+      // different findings, which cost a false clean and a missed real
+      // finding in one day (see the GOLANGCI_LINT_VERSION comment in
+      // Taskfile.yml). It must move in BOTH files at once, which is what the
+      // customManagers below are for, so this rule exists to keep them in
+      // one PR and to make that PR obviously about the linter.
+      "matchDepNames": ["golangci/golangci-lint"],
+      "groupName": "golangci-lint (pinned in two files -- must move together)",
+      "labels": ["toolchain", "lint"],
+      "minimumReleaseAge": "7 days"
+    },
+    {
+      // eemeli/yaml is the single most safety-critical dependency in this
+      // repository: the whole comment-preserving round-trip guarantee rests
+      // on its Document/CST behaviour, and a silent change there would
+      // corrupt users' configs. Never grouped, held back, and labelled so a
+      // human reads the changelog before merging.
+      "matchManagers": ["npm"],
+      "matchDepNames": ["yaml"],
+      "groupName": null,
+      "labels": ["needs-round-trip-review"],
+      "minimumReleaseAge": "14 days"
+    },
+    {
+      // React Flow and elkjs drive the DAG, whose layout numbers were
+      // matched to production by hand. A minor bump can move node geometry,
+      // so these want a look rather than a rubber stamp.
+      "matchManagers": ["npm"],
+      "matchDepNames": ["@xyflow/react", "elkjs"],
+      "groupName": "DAG rendering",
+      "labels": ["needs-visual-review"]
+    }
+  ],
+
+  "customManagers": [
+    {
+      // Keeps Taskfile.yml's GOLANGCI_LINT_VERSION and .circleci/config.yml's
+      // install pin in lockstep. Without this Renovate cannot see either --
+      // they are a shell command and a YAML scalar, not a manifest entry --
+      // and the two would drift apart silently, which is exactly the class
+      // of bug the version-mismatch warning was added to catch.
+      "customType": "regex",
+      "managerFilePatterns": ["/^Taskfile\\.yml$/", "/^\\.circleci/config\\.yml$/"],
+      "matchStrings": [
+        "GOLANGCI_LINT_VERSION:\\s*(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)",
+        "golangci-lint/HEAD/install\\.sh \\| sh -s -- -b \\$\\(go env GOPATH\\)/bin v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
+      ],
+      "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.*)$"
+    }
+  ],
+
+  "ignorePaths": [
+    "**/node_modules/**",
+    "internal/webassets/dist/**"
+  ]
+}

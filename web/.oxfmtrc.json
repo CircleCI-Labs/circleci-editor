@@ -1,0 +1,7 @@
+{
+  "singleQuote": true,
+  "trailingComma": "all",
+  "printWidth": 80,
+  "arrowParens": "always",
+  "ignorePatterns": ["dist", "node_modules"]
+}

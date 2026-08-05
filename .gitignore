@@ -1,0 +1,51 @@
+# --- Go ---
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.txt
+coverage.html
+/circleci-editor
+
+# --- Node / web ---
+node_modules/
+.pnpm-store/
+web/node_modules/
+web/dist/
+web/.vite/
+web/coverage/
+
+# --- Embedded web assets ---
+# The Go binary embeds the built web bundle from internal/webassets/dist/.
+# That directory is generated output only; nothing in it is committed except
+# .gitkeep, which exists so the go:embed directive always has a file to match
+# and `go build` therefore works on a fresh clone. When no build is present,
+# the binary serves internal/webassets/placeholder.html instead.
+internal/webassets/dist/*
+!internal/webassets/dist/.gitkeep
+
+# --- Task ---
+.task/
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Misc ---
+*.log
+.env
+.env.local
+
+# Claude Code agent worktrees. These are real git worktrees created *inside*
+# the repo, so an unqualified `git add -A` stages them as embedded
+# repositories ("warning: adding embedded git repository") rather than
+# ignoring them -- easy to commit by accident while integrating parallel
+# branches, and meaningless to anyone else.
+.claude/

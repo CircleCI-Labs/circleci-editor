@@ -1,0 +1,7 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability Disclosure
+    url: https://github.com/CircleCI-Labs/circleci-editor/blob/main/CONTRIBUTING.md#security-disclosure
+    about: >-
+      Report privately, and please note this project is not covered by
+      CircleCI's official security disclosure process -- see CONTRIBUTING.md.

@@ -1,0 +1,224 @@
+# Copyright (c) 2026 Circle Internet Services, Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of
+# this software and associated documentation files (the "Software"), to deal in
+# the Software without restriction, including without limitation the rights to
+# use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+# the Software, and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+# FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+# COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+# IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+# SPDX-License-Identifier: MIT
+
+version: "3"
+
+vars:
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  # Must match the version .circleci/config.yml installs in the `check` job.
+  # golangci-lint bundles its linters (gosec above all), and their default rule
+  # sets change between releases -- a newer local build genuinely reported
+  # "0 issues" on code that CI's pinned build failed with seven gosec findings
+  # (G117/G704), which is a confusing way to lose half an hour. `task lint`
+  # warns when the two disagree.
+  GOLANGCI_LINT_VERSION: 2.10.1
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list-all
+
+  tools:install:
+    desc: Install Go-based developer tools (golangci-lint is installed separately -- see GOLANGCI_LINT_VERSION)
+    cmds:
+      - go install github.com/google/addlicense@v1.1.1
+      - go install gotest.tools/gotestsum@v1.13.0
+      - 'echo "Note: golangci-lint is installed separately. CI pins v{{.GOLANGCI_LINT_VERSION}}; Homebrew may install a newer one, and lint results can differ -- see the GOLANGCI_LINT_VERSION comment in Taskfile.yml."'
+
+  web:install:
+    desc: Install web app dependencies
+    cmds:
+      - pnpm --dir web install
+
+  web:build:
+    desc: Build the production web app bundle
+    cmds:
+      - pnpm --dir web build
+
+  web:lint:
+    desc: Lint the web app
+    cmds:
+      - pnpm --dir web lint
+
+  web:format:
+    desc: Check that the web app source is formatted (does not write)
+    cmds:
+      - pnpm --dir web format
+
+  web:format:fix:
+    desc: Format the web app source in place
+    cmds:
+      - pnpm --dir web format:fix
+
+  web:typecheck:
+    desc: Type-check the web app
+    cmds:
+      - pnpm --dir web typecheck
+
+  web:test:
+    desc: Run web app tests
+    cmds:
+      - pnpm --dir web test:run
+
+  build:
+    desc: Build the web app and the circleci-editor binary
+    deps:
+      - web:build
+    cmds:
+      - go build -trimpath -ldflags="-X main.version={{.VERSION}}" -o bin/circleci-editor ./cmd/circleci-editor
+
+  test:
+    desc: Run the Go test suite
+    cmds:
+      - go test -race ./...
+
+  lint:
+    desc: Run golangci-lint (warns if the local version differs from CI's pin)
+    cmds:
+      - |
+        # Both sides are normalised before comparing: strip a leading "v" and
+        # any surrounding whitespace. `version --short` is not consistent about
+        # the prefix across releases, and an unnormalised compare made this
+        # warning fire for someone whose version *did* match CI's pin -- a
+        # warning that cries wolf gets ignored, which is worse than none, and
+        # this one is the guard against the false-clean lint that cost a real
+        # missed finding. Falls back to the long `--version` line if `--short`
+        # is unavailable in whatever version is installed.
+        have=$(golangci-lint version --short 2>/dev/null \
+               || golangci-lint --version 2>/dev/null \
+                  | sed -nE 's/.*version ([0-9]+\.[0-9]+\.[0-9]+).*/\1/p')
+        have=$(printf '%s' "${have:-unknown}" | tr -d '[:space:]' | sed 's/^v//')
+        want=$(printf '%s' "{{.GOLANGCI_LINT_VERSION}}" | tr -d '[:space:]' | sed 's/^v//')
+        if [ "$have" != "$want" ]; then
+          echo "WARNING: golangci-lint $have is installed, but CI pins $want." >&2
+          echo "         Lint results can differ between versions (gosec's default rules move)." >&2
+          echo "         To match CI exactly:" >&2
+          echo "           curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \\" >&2
+          echo "             | sh -s -- -b \"$(go env GOPATH)/bin\" v{{.GOLANGCI_LINT_VERSION}}" >&2
+        fi
+      - golangci-lint run
+
+  fmt:
+    desc: Format Go source with golangci-lint's formatters
+    cmds:
+      - golangci-lint fmt
+
+  fmt:check:
+    desc: Check that Go source is formatted (gofmt/goimports via golangci-lint fmt)
+    cmds:
+      - golangci-lint fmt --diff
+
+  # `web/**` is excluded deliberately: the web tree carries its licence via
+  # `web/package.json`'s `license` field rather than a per-file SPDX header,
+  # which is the conventional choice for a bundled frontend.
+  #
+  # `.claude/**` is ignored by both tasks below because `addlicense` walks the
+  # tree itself and does not consult `.gitignore`. Agent worktrees live under
+  # `.claude/worktrees/`, so without this `license:check` fails whenever an agent
+  # is running -- reporting another checkout's files as missing headers -- and
+  # `task license` would *write* headers into that other checkout, which is the
+  # worse of the two failures.
+  license:
+    desc: Add missing license headers to source files
+    cmds:
+      - addlicense -c "Circle Internet Services, Inc." -l mit -s -y 2026 -ignore ".github/**" -ignore ".circleci/**" -ignore ".claude/**" -ignore "web/**" -ignore "bin/**" -ignore "dist/**" -ignore "internal/webassets/dist/**" -ignore "internal/guides/snapshot/**" -ignore "**/*.html" .
+
+  license:check:
+    desc: Check that all source files have license headers
+    cmds:
+      - addlicense -c "Circle Internet Services, Inc." -l mit -s -y 2026 -ignore ".github/**" -ignore ".circleci/**" -ignore ".claude/**" -ignore "web/**" -ignore "bin/**" -ignore "dist/**" -ignore "internal/webassets/dist/**" -ignore "internal/guides/snapshot/**" -ignore "**/*.html" -check .
+
+  guides:refresh:
+    desc: Re-vendor internal/guides/snapshot from the head of circleci/circleci-docs
+    cmds:
+      # Rewrites the vendored AsciiDoc and its manifest (upstream commit SHA
+      # plus a SHA-256 per file), then checks it parses. The manifest is the
+      # only place that commit SHA is recorded, so nothing else needs
+      # updating by hand. See internal/guides's package doc comment for the
+      # provenance this snapshot rests on.
+      - go run ./internal/guides/cmd/refresh-snapshot
+      - go test ./internal/guides/...
+
+  tidy:
+    desc: Tidy Go module dependencies
+    cmds:
+      - go mod tidy
+
+  tidy:check:
+    desc: Check that go.mod/go.sum are tidy
+    cmds:
+      - go mod tidy -diff
+
+  integrity:
+    desc: Fail on committed merge-conflict markers
+    cmds:
+      - scripts/check-repo-integrity.sh
+
+  check:
+    desc: Run everything CI runs (integrity, fmt, lint, license, tidy, tests, web checks)
+    cmds:
+      - task: integrity
+      - task: fmt:check
+      - task: lint
+      - task: license:check
+      - task: tidy:check
+      - task: test
+      - task: web:format
+      - task: web:lint
+      - task: web:typecheck
+      - task: web:test
+
+  fix:
+    desc: Auto-fix formatting, license headers, tidiness, and lint issues
+    cmds:
+      - task: fmt
+      - task: license
+      - task: tidy
+      - golangci-lint run --fix
+      - task: web:format:fix
+
+  dev:web:
+    desc: (internal) Run the Vite dev server
+    cmds:
+      - pnpm --dir web dev
+    internal: true
+
+  dev:host:
+    desc: (internal) Run the Go host, proxying web asset requests to the Vite dev server
+    env:
+      VCE_DEV_PROXY: http://localhost:5173
+    cmds:
+      # --keep-alive: since issue #177 the host stops a short while after the
+      # last editor window closes, which is right for a released binary and
+      # wrong for `task dev` -- closing a tab mid-iteration would take the
+      # host down while the Vite dev server it is paired with stayed up, and a
+      # dev-server reload's stream gap is larger and far more variable than
+      # the grace period was sized for (see internal/host/clients.go).
+      - go run ./cmd/circleci-editor --keep-alive
+    internal: true
+
+  dev:
+    desc: Run the Go host and the Vite dev server together for local development
+    deps:
+      - dev:web
+      - dev:host

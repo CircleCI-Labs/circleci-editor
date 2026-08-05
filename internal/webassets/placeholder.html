@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>CircleCI Visual Config Editor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 2rem;
+        background: #161719;
+        color: #f5f6f7;
+        font:
+          16px/1.6 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Inter,
+          Roboto,
+          sans-serif;
+      }
+      main {
+        max-width: 34rem;
+        background: #1f2124;
+        border: 1px solid #2e3135;
+        border-radius: 12px;
+        padding: 2rem;
+      }
+      h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.25rem;
+      }
+      p {
+        margin: 0 0 1.25rem;
+        color: #9ba0a6;
+      }
+      pre {
+        margin: 0;
+        padding: 0.875rem 1rem;
+        background: #161719;
+        border: 1px solid #2e3135;
+        border-radius: 8px;
+        overflow-x: auto;
+        color: #22a3e5;
+        font:
+          13px/1.5 ui-monospace,
+          SFMono-Regular,
+          "SF Mono",
+          Menlo,
+          monospace;
+      }
+      .hint {
+        margin: 1.25rem 0 0;
+        font-size: 0.875rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Web interface not built yet</h1>
+      <p>
+        This binary was compiled without the single-page application bundle.
+        Build the web assets, then restart the editor.
+      </p>
+      <pre>task web:build</pre>
+      <p class="hint">
+        Or run <code>pnpm --dir web install &amp;&amp; pnpm --dir web build</code>.
+        For live reloading during development, use <code>task dev</code>.
+      </p>
+    </main>
+  </body>
+</html>

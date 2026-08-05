@@ -1,0 +1,1479 @@
+@import 'tailwindcss';
+@import './design/fonts.css';
+
+@theme {
+  /*
+   * Primitive ramps, issue #69 -- read verbatim out of the compiled CSS
+   * `app.circleci.com` serves publicly. Kept in `oklch()`
+   * exactly as production ships them, not downconverted to hex: oklch's
+   * gamut covers colour sRGB can't represent without clipping, and several
+   * of these ramps (blue-500/600, red-500/600) sit close enough to that
+   * edge that a hex round-trip perceptibly flattens them on a P3 display.
+   *
+   * The one and only reason this whole primitive layer exists: production's
+   * neutral ramp is *blue-tinted* -- every step carries a hue around
+   * 258-273 with real chroma -- where this app previously used pure
+   * zero-chroma greys (`#161719`, `#1f2124`, `#26282c`, ...). That hue is
+   * what makes production read as "CircleCI" instead of "a dark app"; the
+   * semantic tokens below reference this ramp by `var()` specifically so
+   * that hue carries through instead of getting lost the way a flat hex
+   * palette would lose it.
+   *
+   * This is the full set `production-tokens.md` records, not just the
+   * subset the semantic layer below happens to use -- kept complete so a
+   * future token (or a component that wants a raw `bg-neutral-700`/
+   * `text-blue-400` utility Tailwind now generates for free from these)
+   * doesn't have to re-derive a step this file already has.
+   */
+  --color-white: oklch(100% 0 0);
+  --color-neutral-20: oklch(97.2% 0.005 258.3);
+  --color-neutral-30: oklch(94.9% 0.006 264.5);
+  --color-neutral-40: oklch(89.1% 0.012 264.5);
+  --color-neutral-50: oklch(83.8% 0.015 264.5);
+  --color-neutral-60: oklch(78.4% 0.02 273.2);
+  --color-neutral-70: oklch(73.9% 0.022 271.1);
+  --color-neutral-100: oklch(59.9% 0.028 265.5);
+  --color-neutral-200: oklch(55.3% 0.029 268.6);
+  --color-neutral-300: oklch(50.7% 0.03 268.5);
+  --color-neutral-400: oklch(46.3% 0.03 255.7);
+  --color-neutral-500: oklch(40.6% 0.038 258.9);
+  --color-neutral-600: oklch(35.4% 0.043 259.3);
+  --color-neutral-700: oklch(30.4% 0.044 260.6);
+  --color-neutral-800: oklch(27.2% 0.039 261);
+  --color-neutral-900: oklch(23.8% 0.032 260.4);
+  --color-neutral-1000: oklch(19.3% 0.032 264.5);
+
+  --color-blue-50: oklch(96% 0.02 263);
+  --color-blue-100: oklch(91% 0.03 262);
+  --color-blue-200: oklch(83% 0.08 260);
+  --color-blue-400: oklch(67% 0.18 261);
+  --color-blue-500: oklch(56% 0.23 262);
+  --color-blue-600: oklch(51% 0.23 265);
+  --color-blue-700: oklch(42% 0.2 262);
+  --color-blue-900: oklch(24% 0.11 262);
+
+  --color-green-50: oklch(95% 0.03 149);
+  --color-green-200: oklch(85% 0.11 152);
+  --color-green-300: oklch(74% 0.14 153);
+  --color-green-400: oklch(63% 0.16 153);
+  --color-green-500: oklch(54% 0.14 152);
+  --color-green-600: oklch(47% 0.12 153);
+  --color-green-900: oklch(22% 0.06 150);
+
+  --color-red-50: oklch(97% 0.02 31.1);
+  --color-red-100: oklch(92% 0.04 28);
+  --color-red-200: oklch(88% 0.07 27.8);
+  --color-red-400: oklch(67% 0.17 26.2);
+  --color-red-500: oklch(58% 0.17 24.5);
+  --color-red-600: oklch(50% 0.17 23.6);
+  --color-red-700: oklch(41% 0.17 22.2);
+  --color-red-800: oklch(32% 0.13 23.2);
+  --color-red-900: oklch(23% 0.08 29.2);
+
+  /* Warning/caution's real ramp -- issue #69. This app previously used
+     `#f5a623`, a plain orange that isn't in CircleCI's design system at
+     all (confirmed absent from the full captured stylesheet -- it isn't a
+     mis-picked step of any ramp here, it was simply invented). Production
+     uses `bronze` for every warning surface. */
+  --color-bronze-50: oklch(98% 0.03 92.4);
+  --color-bronze-300: oklch(75% 0.12 69.5);
+  --color-bronze-400: oklch(66% 0.12 72.2);
+  --color-bronze-500: oklch(57% 0.11 72.5);
+  --color-bronze-700: oklch(40% 0.09 65.8);
+  --color-bronze-900: oklch(24% 0.07 42.8);
+
+  --color-purple-100: oklch(92% 0.04 306);
+  --color-purple-300: oklch(76% 0.12 306);
+  --color-purple-400: oklch(67% 0.15 303);
+  --color-purple-500: oklch(58% 0.17 299);
+
+  /*
+   * Surface radius, issue #69: production's default surface radius is
+   * `.625rem` (10px), not the 8px this app had been hand-rolling ad hoc
+   * (`.vce-dag-node`, the React Flow minimap/controls overrides further
+   * down this file all hardcoded `border-radius: 8px`) or Tailwind's own
+   * un-overridden default scale (`rounded-md` is 6px out of the box).
+   * Re-deriving Tailwind's radius scale *from* `--radius` -- rather than
+   * leaving `rounded-md`/`rounded-lg` at their stock values and only fixing
+   * the raw CSS below -- means every existing `rounded-md`/`rounded-lg`
+   * call site across the app (buttons, inputs, tooltips, dialogs) picks up
+   * a value consistent with this token automatically, without touching
+   * each of those files individually. `--radius-2xl` is Tailwind's
+   * existing default (1rem) and production's own value for it verbatim --
+   * listed for documentation, not changed.
+   */
+  --radius: 0.625rem; /* 10px -- production's default surface radius */
+  --radius-sm: calc(var(--radius) - 4px); /* 6px */
+  --radius-md: calc(
+    var(--radius) - 2px
+  ); /* 8px -- matches this file's previous ad-hoc 8px exactly */
+  --radius-lg: var(--radius); /* 10px */
+  --radius-xl: calc(var(--radius) + 4px); /* 14px */
+  --radius-2xl: 1rem; /* unchanged -- Tailwind's default, and production's own value */
+
+  /*
+   * Which surface token means what, issue #185. The owner's report: *"the top
+   * navigation bar, where it says CircleCI YAML, unsaved, valid, and the
+   * buttons, is the same color as the text editor. It would be nice to have a
+   * little more differentiator between those two colours so people know that's
+   * the top nav and this is a different section."*
+   *
+   * It was literally the same colour, twice over, and measured rather than
+   * guessed (`e2e/zz`-style probe against the real running app, values read
+   * back through `getComputedStyle`):
+   *
+   * - dark: the app bar was `--color-cc-panel` (#161f2e) and so was every
+   *   pane's body -- 1.000:1. And every `Panel` *header* was
+   *   `--color-cc-panel-raised` (#1c273a), which is bit-for-bit the editor's
+   *   own ground-truth CodeMirror background (`panes/yaml/editorTheme.ts`,
+   *   recovered from CircleCI's production web UI) -- also 1.000:1.
+   * - light: the app bar, every pane body *and* the editor were all
+   *   `--color-cc-panel` == `--color-white` -- 1.000:1.
+   *
+   * So chrome and content were sharing tokens in both themes, and the boundary
+   * was carried entirely by a 1px border. The three planes, and the rule every
+   * surface in this app now follows:
+   *
+   * | plane | token | what sits on it |
+   * |---|---|---|
+   * | **shell / chrome** | `--color-cc-bg` | the app bar, `Panel` headers, `PaneSlot`'s label strip, `WorkflowTabs`, `DiagnosticsStrip`, the page gutter |
+   * | **content** | `--color-cc-panel` | pane bodies; the editor's own recovered surface, which equals `-panel-raised` in dark and `--color-white` in light |
+   * | **raised / interactive** | `--color-cc-panel-raised` | buttons, menus, tooltips, badges -- anything that should read as sitting *above* its surface (see `design/controlAffordance.ts`) |
+   *
+   * No new colour and no new token: this is the existing three-step ramp
+   * applied by role. It is also the direction the app was already half-way to
+   * -- `WorkflowTabs` and `PaneSlot`'s strip were already `--color-cc-bg`, while
+   * `Panel`'s header and `DiagnosticsStrip` were `-panel-raised`; picking one
+   * settled that split rather than adding a third treatment, which is what
+   * #185 asked for ("stay consistent with [the compiled view] rather than
+   * inventing a third treatment").
+   *
+   * Chrome is the *recessed* plane, not the raised one, which is why the app
+   * bar moved down the ramp rather than up: `-panel-raised` in dark is the
+   * editor's own colour, so promoting chrome into it would have made the
+   * headline complaint exactly true instead of merely nearly true. It also
+   * keeps every interactive control one step above whatever chrome it sits on,
+   * in both themes -- which #183's affordance work depends on.
+   *
+   * Measured separations after the change (same probe, both themes):
+   * app bar vs editor 1.083:1 light (was 1.000) / 1.227:1 dark (was 1.103);
+   * pane header vs editor 1.083:1 light (was 1.162) / 1.227:1 dark (was
+   * 1.000); app bar vs pane body 1.083:1 light (was 1.000) / 1.112:1 dark (was
+   * 1.000). Light's ramp is compressed between `--color-neutral-30` and white,
+   * so the one relationship that gives ground there (pane header vs editor,
+   * 1.162 -> 1.083) is the price of the dark-mode 1.000:1 fix and of chrome
+   * being one colour; every *text* pair improves in both themes, because
+   * `--color-cc-bg` is further from every foreground token than
+   * `-panel-raised` is (e.g. `--color-cc-text-faint`: 4.66:1 -> 5.00:1 light,
+   * 4.62:1 -> 5.67:1 dark). `e2e/contrast.spec.ts` is the enforcement.
+   */
+
+  /* CircleCI-flavored palette, light and dark. This models the look of
+     that design system with plain Tailwind tokens so it can be swapped
+     in later without touching component code.
+
+     Every `--color-cc-*` value below is a *fallback only* -- issue #52
+     (light/dark mode) made colour theme-dependent, so the values that
+     actually render come from the `:root[data-theme="light"]` /
+     `:root[data-theme="dark"]` blocks further down this file, which
+     unconditionally redefine all of them. These `@theme` values exist only
+     so Tailwind has something to register the `bg-cc-*`/`text-cc-*`/
+     `border-cc-*` utilities against, and as a belt-and-suspenders default if
+     `data-theme` is somehow never applied (see `themeStore.ts` and the
+     bootstrap script in `index.html`, which are what normally set it before
+     first paint). They are set to the dark values, matching this app's
+     previous dark-only default. */
+  --color-cc-bg: var(--color-neutral-1000);
+  --color-cc-panel: var(--color-neutral-900);
+  --color-cc-panel-raised: var(--color-neutral-800);
+  --color-cc-border: var(--color-neutral-500);
+  --color-cc-border-strong: var(--color-neutral-400);
+  /* Issue #200 -- see the `:root[data-theme=...]` blocks below for the real
+     values and the contrast math. Fallback only, so it just needs to exist
+     for Tailwind to register the `border-cc-border-interactive` utility. */
+  --color-cc-border-interactive: oklch(54.6% 0.02 264.5);
+  --color-cc-text: #f4f6f9;
+  --color-cc-text-muted: #959bab;
+  --color-cc-text-faint: #8a8f9a;
+  --color-cc-accent: #a9c9fc;
+  --color-cc-accent-hover: #bed6fd;
+  --color-cc-success: #5cc480;
+  --color-cc-warning: var(--color-bronze-300);
+  --color-cc-danger: #f87171;
+  --color-cc-danger-hover: #f98686;
+  --color-cc-info: #83aefc;
+  /* Text colour for content painted *on top of* a `--color-cc-accent` /
+     `--color-cc-danger` fill (button labels, the pressed segment of a
+     toggle). Needs its own token, not a plain light/dark constant, because
+     which text colour is readable flips with the theme: dark mode's accent
+     and danger are pale tints (readable with near-black text), light
+     mode's are vivid/saturated (readable with white text instead) -- see
+     the `:root[data-theme=...]` blocks below for the measured contrast
+     each way. */
+  --color-cc-on-accent: #0c1116;
+  --color-cc-on-danger: #0c1116;
+
+  /* Now self-hosted (issue #69, ../design/fonts.css) -- these two lists are
+     unchanged from before, but they no longer *depend* on the browser
+     already having Inter/IBM Plex Mono installed: fonts.css registers
+     `@font-face` rules for both under these exact family names, so the
+     first name in each stack now always resolves rather than silently
+     falling through to Roboto/system-ui on a machine that never had Inter. */
+  --font-mono:
+    'IBM Plex Mono', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Monaco,
+    Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --font-sans:
+    Inter, -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue',
+    Helvetica, 'Segoe UI', Arial, sans-serif;
+
+  /* CircleCI's real type scale is 12/14/16/20/24px -- no 10px or 11px step
+     -- which is exactly Tailwind's default text-xs/sm/base/xl/2xl. The one
+     gap is anything *below* 12px: this app had ~31 arbitrary text-[11px]/
+     text-[10px] call sites for compact badge/meta labels. This token gives
+     them a single real value instead of an arbitrary one; it does not
+     itself add a step to CircleCI's scale, it just replaces one-off magic
+     numbers with one documented, reused one. */
+  --text-2xs: 0.6875rem; /* 11px */
+  --text-2xs--line-height: 1rem;
+}
+
+/*
+ * Issue #52: light/dark mode. These two blocks are the actual source of
+ * truth for every `--color-cc-*` value -- the copies inside `@theme` above
+ * are fallbacks only. `themeStore.ts` sets `data-theme="light"` or
+ * `="dark"` on `<html>` (never anything else, e.g. never `"system"` itself
+ * -- it resolves that preference to a concrete theme first), so exactly one
+ * of these two blocks is ever active.
+ *
+ * Deliberately plain, unlayered CSS rather than inside `@layer base`:
+ * Tailwind's `@theme` block emits its `--color-cc-*` declarations into a
+ * `:root` rule inside the `theme` cascade layer (`@import 'tailwindcss'`
+ * itself declares the layer order `theme, base, components, utilities`).
+ * Per the CSS cascade-layers spec, *unlayered* rules always beat *any*
+ * layered rule at equal specificity regardless of source order -- so these
+ * `:root[data-theme=...]` overrides win over `@theme`'s `:root` rule even
+ * though both match `:root` at the same specificity, and even though
+ * `@theme`'s rule happens to be physically later in some build outputs.
+ * (`@layer base` would *also* win here, since `base` is declared after
+ * `theme` in Tailwind's own layer order -- but leaving these unlayered
+ * avoids depending on that ordering at all, and matches every other
+ * non-utility rule already in this file, e.g. `.vce-dag-node` below, none
+ * of which sit inside `@layer` either.)
+ *
+ * Verified empirically, not just reasoned about: built the bundle and read
+ * `getComputedStyle(document.documentElement).getPropertyValue('--color-cc-
+ * bg')` in a real browser with each `data-theme` value -- it resolves to
+ * this block's value, not `@theme`'s, in both cases.
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  /* Issue #69: rebuilt on the primitive ramp instead of flat hex, mirroring
+     production's own `--background-color-page` / `-base` / `-base-subtle` /
+     `--border-color-neutral` mappings verbatim -- `background-color-page:
+     neutral-20`, `-base: white`, `-base-subtle: neutral-30`,
+     `border-color-neutral: neutral-40`. Previously these four were flat hex
+     (`#f4f6f9`/`#ffffff`/`#eceef2`/`#d7dbe3`) that happened to already equal
+     these exact primitive steps -- confirmed by converting each ramp step
+     back to sRGB and diffing byte-for-byte against the old literals, so
+     this changes *how* the values are derived, not what they render as.
+     `--color-cc-border-strong` has no direct production counterpart; it's
+     simply the next step along the same scale (`--color-neutral-50`) as
+     `--color-cc-border` (`--color-neutral-40`), for a second, more visible
+     border tier -- same rationale as before, now expressed as a ramp step
+     instead of its precomputed hex. */
+  --color-cc-bg: var(--color-neutral-20);
+  --color-cc-panel: var(--color-white);
+  --color-cc-panel-raised: var(--color-neutral-30);
+  --color-cc-border: var(--color-neutral-40);
+  --color-cc-border-strong: var(--color-neutral-50);
+
+  /* Issue #200 -- WCAG 1.4.11 (Non-text Contrast) needs 3:1 between an
+     interactive control's boundary and the surface it sits on. Neither
+     `--color-cc-border` (1.282:1 on `-bg`, 1.195:1 on `-panel-raised`) nor
+     `--color-cc-border-strong` (1.519:1 / 1.415:1) gets remotely close, and
+     production's own light-mode border is equally faint -- "mirror
+     production" and "meet 1.4.11" cannot both hold for this ramp (see the
+     issue's own analysis). Reaching 3:1 by moving `-border`/`-border-strong`
+     themselves would mean jumping to roughly production's *content* tier
+     (`--color-neutral-100`, oklch ~60% L) -- a much bigger, more visible
+     change than the failure requires, and it would darken every decorative
+     divider and card outline along with the handful of controls that
+     actually need it.
+
+     So this is a third, narrower token, used only where a resting border is
+     the thing that says "this is a control" (`design/controlAffordance.ts`'s
+     three tiers, `Button`'s `secondary`/`ghost`, form inputs, the
+     Source/Compiled toggle's inactive segment, switch tracks) -- never on
+     `Panel`'s card outline or a plain divider, which stay exactly as they
+     were: decorative, and matching production's own faint border.
+
+     Kept on the same hue as the rest of the ramp (264.5, `-border`/
+     `-border-strong`'s own hue) with a touch more chroma (0.02, matching
+     `--color-neutral-60`'s step) so it still reads as "this app's blue-
+     tinted grey" rather than a flat neutral -- it just isn't a *named* ramp
+     step, because the minimum lightness 1.4.11 needs doesn't land on one.
+     Solved by binary search against this file's own contrast probe
+     (`lib/color/contrast.ts`) for the tighter of the two surfaces a border
+     ever sits on here, then re-checked against the other:
+     oklch(62.7% 0.02 264.5) -> #828895, measured 3.062:1 on
+     `--color-cc-panel-raised` (was 1.415:1 for `-border-strong`), 3.285:1 on
+     `--color-cc-bg` (was 1.519:1). Both comfortably past the 3:1 floor
+     without overshooting it the way the content-tier value would. */
+  --color-cc-border-interactive: oklch(62.7% 0.02 264.5);
+
+  /* CircleCI's production web UI --
+     the same file the dark values were recovered from -- gives an explicit
+     light half for every one of these except `--color-cc-text-faint`
+     (Compass's own "content tertiary" concept, `--content-tertiary`,
+     which the dark theme collapses into the same value as "content
+     secondary" but light keeps distinct): `--content-primary: #161616`,
+     `--content-secondary: #404040`, `--content-tertiary: #6a6a6a`,
+     `--content-positive: #006e38`, `--content-negative: #c41e3a`,
+     `--action-primary: #1a66f7`, `--chat-button-bg-hover: #2152e5` (the
+     one real *hover* value that file pairs with `--action-primary`). These
+     five stay flat hex, not `var(--color-*)` references, because
+     production's own served CSS defines them as flat hex too (verified
+     directly against the captured stylesheet -- `--content-primary`,
+     `--content-positive`, etc. are literal `#...` values, not `var()`),
+     unlike `--background-color-*`/`--border-color-*` which really do
+     reference the ramp. Measured against the new ramp-backed surfaces
+     above: 16.71:1 (text/bg), 15.58:1 (text/panel-raised), 5.00:1
+     (text-faint/bg, 4.66:1 on the tightest surface, --color-cc-panel-raised),
+     5.90:1 (success/bg), 5.40:1 (danger/bg) -- all comfortably clear the
+     4.5:1 AA floor; re-measured after the ramp change since panel-raised's
+     exact value now comes from a `var()` chain instead of a literal, not
+     just asserted unchanged. */
+  --color-cc-text: #161616;
+  --color-cc-text-muted: #404040;
+  --color-cc-text-faint: #6a6a6a;
+  --color-cc-accent: #1a66f7;
+  --color-cc-accent-hover: #2152e5;
+  --color-cc-success: #006e38;
+  --color-cc-danger: #c41e3a;
+
+  /* Issue #69: warning is production's `bronze` ramp, not the invented
+     `#f5a623` orange (see the dark block's comment for how that was
+     confirmed absent from the whole system). Light theme's real value is
+     `text-color-warning: bronze-700` (re-derived from the live stylesheet
+     directly, since production's docs don't list this exact mapping) --
+     `oklch(40% .09 65.8)` converts to
+     `#683c00`, measured 8.68:1 on `--color-cc-bg`, 8.09:1 on the tightest
+     surface (`--color-cc-panel-raised`), comfortably above the old
+     `#8f5000`'s 5.85:1/5.45:1.
+     `--color-cc-info` keeps its previous derivation (same hue as
+     `--color-cc-accent`, lightness tuned for AA on a light surface, no
+     production-sourced counterpart either way): `#0a5fc2` measures
+     5.66:1 / 5.27:1. `--color-cc-danger-hover: #9c1529` is a darkened step
+     off `--color-cc-danger` (light-mode hover darkens; dark-mode's
+     brightens -- see its own block) and is only ever used under
+     white/`--color-cc-on-danger` button text, measured 8.23:1. */
+  --color-cc-warning: var(--color-bronze-700);
+  --color-cc-danger-hover: #9c1529;
+  --color-cc-info: #0a5fc2;
+
+  /* `--color-cc-accent`/`-danger` are now vivid, saturated colours (not
+     dark mode's pale tints), so the near-black button-label colour that
+     works on those tints reads at only 3.87:1/3.25:1 here -- below AA.
+     White clears both: 4.90:1 on `--color-cc-accent`, 5.84:1 on
+     `--color-cc-danger` (6.17:1 / 8.23:1 on their `-hover` fills). */
+  --color-cc-on-accent: #ffffff;
+  --color-cc-on-danger: #ffffff;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* CircleCI-flavored dark palette. This models the look of @circleci/
+     compass with plain Tailwind tokens so Compass can be swapped in later
+     without touching component code.
+
+     Issue #69: `--color-cc-bg`/`-panel`/`-panel-raised`/`-border`/
+     `-border-strong` are rebuilt on the primitive ramp, mirroring
+     production's own dark-mode mapping verbatim: `background-color-page:
+     neutral-1000`, `-page-panel: neutral-900`, `-base: neutral-800`,
+     `border-color-neutral: neutral-500`. This is *the* headline fix the
+     issue names: production's neutral ramp carries real chroma at a
+     258-273 hue (blue-tinted) at every step, where this app's previous
+     literals (`#161719`, `#1f2124`, `#26282c`, `#2e3135`, `#3a3d42`) were
+     pure zero-chroma grey -- that hue is most of why the app read as "a
+     dark app" instead of "CircleCI". Worth noting: `--color-neutral-1000`
+     (`oklch(19.3% .032 264.5)`) converts to `#0d1423` -- exactly
+     production's own hardcoded `--surface-1`/`--surface-3`/`--surface-base`
+     dark value, confirmed by converting the ramp step to sRGB and diffing
+     against that literal byte-for-byte. Production defines its "elevated
+     surface" as a separate flat token from `--background-color-page`, but
+     since the two are numerically identical it collapses to one thing
+     here: `--color-cc-bg` *is* CircleCI's navy, not an approximation of it.
+     `--color-cc-border-strong` again has no direct production counterpart;
+     it's the next step lighter than `--color-cc-border` on the same ramp
+     (`--color-neutral-400`, one step past `border-color-neutral`'s
+     `--color-neutral-500`), same "second, more visible border tier"
+     rationale as the light block.
+
+     `--color-cc-text-faint` and `--color-cc-accent` are the two brand/
+     content/status values below that aren't taken from production
+     directly as-is: see the comments on each for why. */
+  --color-cc-bg: var(--color-neutral-1000);
+  --color-cc-panel: var(--color-neutral-900);
+  --color-cc-panel-raised: var(--color-neutral-800);
+  --color-cc-border: var(--color-neutral-500);
+  --color-cc-border-strong: var(--color-neutral-400);
+
+  /* Issue #200 -- same rationale and derivation as the light block's own
+     comment. Dark gets closer to 3:1 on its own (2.623:1 `-border-strong`
+     on `-bg`, 2.138:1 on `-panel-raised`) but still misses, and the tighter
+     surface is the same one: `-panel-raised` sits closer in lightness to a
+     mid-ramp border than `-bg` does, in both themes. Same hue/chroma
+     approach (264.5, 0.02), solved for lightness by binary search:
+     oklch(54.6% 0.02 264.5) -> #6b717c, measured 3.054:1 on
+     `--color-cc-panel-raised` (was 2.138:1), 3.748:1 on `--color-cc-bg`
+     (was 2.623:1). */
+  --color-cc-border-interactive: oklch(54.6% 0.02 264.5);
+
+  --color-cc-text: #f4f6f9; /* production "content primary", dark */
+  --color-cc-text-muted: #959bab; /* production "content secondary", dark */
+  /* Production gives no explicit tertiary/"faint" value distinct from
+     "secondary" in dark mode (`--content-tertiary` collapses to the same
+     `#959bab` as `--content-secondary` there), and the previous #6b7076
+     measured 3.59:1 on --color-cc-bg and 2.96:1 on --color-cc-panel-raised
+     -- both below the 4.5:1 AA floor for normal text (this was one of the
+     three contrast failures a previous styling pass fixed). #8a8f9a keeps
+     the same hue, one step brighter, and still clears AA against the new
+     blue-tinted surfaces above: re-measured at 5.67:1 (--color-cc-bg) /
+     4.62:1 (--color-cc-panel-raised) -- both hold despite the surfaces
+     themselves changing underneath this token. */
+  --color-cc-text-faint: #8a8f9a;
+
+  /* Production's real brand action colour is #1a66f7 (light) / #a9c9fc
+     (dark), a royal/indigo blue, not the cyan this app shipped with.
+     #1a66f7 only measures 3.0-3.7:1 against our dark surfaces (below AA),
+     so we use the dark-mode value directly: #a9c9fc measures 10.90:1 as
+     text on the new --color-cc-bg (was 10.6:1 against the old grey bg --
+     re-measured, still comfortably AA) and 11.24:1 as the background under
+     near-black button text (#0c1116) -- both comfortably AA on every
+     surface this token is used against. */
+  --color-cc-accent: #a9c9fc;
+  --color-cc-accent-hover: #bed6fd;
+  --color-cc-success: #5cc480; /* production "positive", dark */
+  /* Issue #69: warning is production's `bronze` ramp, not `#f5a623` --
+     confirmed by grepping the full captured stylesheet for that literal and
+     every ramp this app defines: it doesn't appear anywhere in the real
+     system, it was invented. Production's dark `text-color-warning` is
+     `bronze-300` (`oklch(75% .12 69.5)`, converts to `#df9f53`), measured
+     8.08:1 on the new --color-cc-bg, 6.58:1 on the tightest surface
+     (--color-cc-panel-raised) -- comfortably above AA, and used for every
+     warning surface this token drives: Badge's `warning` tone, OrbAvatar's
+     `warning` tone, the DAG's `.vce-dag-warning-label`, and -- the two
+     surfaces the issue calls out by name -- `.vce-dag-node--undefined`'s
+     border/tint and `.vce-minimap-node--undefined`'s fill (both further
+     down this file, both keyed off this same token, so fixing the value
+     here fixes every one of them without a separate edit per call site). */
+  --color-cc-warning: var(--color-bronze-300);
+  --color-cc-danger: #f87171; /* production "negative", dark */
+  --color-cc-danger-hover: #f98686;
+  /* A distinct blue "info/running" status family, for states (like
+     Checking...) that shouldn't read as plain neutral grey but also
+     shouldn't borrow the interactive --color-cc-accent verbatim. Same hue
+     family, one step more saturated/mid-toned than --color-cc-accent. */
+  --color-cc-info: #83aefc;
+
+  /* Dark mode's accent/danger are pale tints, so near-black text is the
+     readable choice on top of them -- measured 11.2:1 (accent) / 6.86:1
+     (danger). */
+  --color-cc-on-accent: #0c1116;
+  --color-cc-on-danger: #0c1116;
+}
+
+@layer base {
+  * {
+    border-color: var(--color-cc-border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  /* Issue #188: `document.scrollingElement` is `<html>` in this app (standards
+     mode), not `<body>` -- verified directly against the real running app.
+     Setting `overflow-y: hidden` on `body` alone (matching how `overflow-x`
+     below is written) left the window just as scrollable: `body`'s own
+     computed `overflow-y` changed, but `documentElement.scrollTop` could
+     still be driven all the way to its max and the whole app visibly slid
+     up. This rule, on the element that's actually in charge, is what stops
+     it. See `body`'s own `overflow-x` comment just below for why this is a
+     backstop and not a claim that nothing overflows -- the same applies here,
+     doubly so: unlike the horizontal axis (measured at zero delta everywhere,
+     always), several *individual panes* genuinely and correctly scroll
+     vertically inside their own bounds (the palette's own list, a tall
+     editor, the AI pane's settings panel) -- see the one-scroll-region-
+     per-pane rule, unaffected by this. Every one of those already carries its
+     own `overflow-y: auto` and stays exactly as scrollable as before; this
+     rule only removes the *window's* own ability to scroll past all of them
+     at once. */
+  html {
+    overflow-y: hidden;
+  }
+
+  body {
+    background-color: var(--color-cc-bg);
+    color: var(--color-cc-text);
+    font-family: var(--font-sans);
+    /* A backstop against a horizontally-scrolling page, not the mechanism that
+       prevents one -- and worth knowing it *masks* an overflow rather than
+       preventing it, which is part of why the over-full app bar issue #154
+       reports went unnoticed for so long: the page never scrolled, so the
+       shortfall was silently pushed into the file switcher's own scrollbar
+       instead. The real guarantee is measured, on `documentElement` (the box
+       that actually reports an overflow) at four widths in both themes -- see
+       `e2e/responsive-layout.spec.ts`. Kept because a clipped right edge is a
+       better failure than a page that scrolls sideways.
+
+       `overflow-y: hidden` alongside it (issue #188), for the vertical axis --
+       see the comment on `html`'s own rule just above for why the real fix
+       has to live there too, and why this is still safe even though
+       `documentElement.scrollHeight` never actually reaches `clientHeight`:
+       walked every element on the real running app (a probe that reports an
+       element only when its content genuinely exceeds its own box *and*
+       isn't already inside a real, working internal scroller) and found
+       nothing reachable in the extra space -- forcing `scrollTop` into it
+       just reveals blank surface below the app, never a clipped control.
+       Measured before this fix, default preset, 1280x800: 443px of
+       `documentElement` overflow with zero uncontained elements found by that
+       walk. */
+    overflow-x: hidden;
+    overflow-y: hidden;
+  }
+
+  /*
+   * Issue #183, the app-wide half of the affordance rule (the per-control half
+   * lives in `design/controlAffordance.ts`): *"I want to make it very clear in
+   * the design language what's clickable and what's not."*
+   *
+   * Nothing in this app had a pointer cursor unless a call site had spelled out
+   * `cursor-pointer` by hand -- three had (`.vce-dag-delete-affordance`,
+   * `.vce-dag-edge-condition`, the palette's `<summary>`s), and every other
+   * button, tab, toggle segment and menu item in the product rendered with the
+   * UA default arrow. Measured on the real running app before this change:
+   * `getComputedStyle(...).cursor` was `"default"` on both of the controls #183
+   * was reported against.
+   *
+   * The cause is worth recording rather than re-discovering: Tailwind v4's
+   * Preflight deliberately removed the `button { cursor: pointer }` reset v3
+   * shipped (verified directly in `node_modules/tailwindcss/preflight.css` --
+   * its only `cursor` declaration is Safari's spin-button fix). So this is not
+   * a regression in this app's own CSS; it is a default this app never
+   * replaced.
+   *
+   * Applied by selector rather than by adding a class at every call site so it
+   * reaches controls that import nothing from this codebase's own design layer
+   * -- Radix's `<Switch>`, React Flow's canvas buttons, `<summary>` (whose UA
+   * default is also an arrow), and any future one. `:disabled`/`aria-disabled`
+   * are excluded: `Button` already sets `disabled:cursor-not-allowed`, and a
+   * pointer on an inert control is a worse lie than no pointer on an active
+   * one.
+   */
+  button:not(:disabled):not([aria-disabled='true']),
+  summary,
+  [role='button']:not([aria-disabled='true']),
+  [role='tab']:not([aria-disabled='true']),
+  [role='menuitem'],
+  [role='menuitemradio'] {
+    cursor: pointer;
+  }
+
+  /* Accessible, visible focus rings everywhere, without relying on
+     browser-default outlines (which are inconsistent across controls). */
+  :focus-visible {
+    outline: 2px solid var(--color-cc-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background-color: color-mix(
+      in srgb,
+      var(--color-cc-accent) 35%,
+      transparent
+    );
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--color-cc-border-strong);
+    border-radius: 6px;
+  }
+}
+
+/* React Flow DAG job nodes, restyled to fit this app's own panel UI (using
+   its theme-aware `--color-cc-*` tokens, so this works in either theme). */
+.vce-dag-node {
+  position: relative;
+  display: flex;
+  height: 100%;
+  width: 100%;
+  flex-direction: column;
+  justify-content: center;
+  border: 1px solid var(--color-cc-border-strong);
+  background-color: var(--color-cc-panel-raised);
+  color: var(--color-cc-text);
+  /* Issue #69: was a hardcoded 8px; a node is a "surface" in production's
+     own terms, so it takes the real default surface radius instead of the
+     value this app had guessed. */
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  /* Issue #90: production's own job card is `px-2 py-2` (8px/8px) around
+     its one row; ours was `6px 10px` around two. Matching production's
+     vertical padding is what actually produces its 44px height at a
+     `text-sm`/16px-line-height row (8 + 8 + border*2 + the row's own
+     content height) -- `NODE_HEIGHT` in `layout.ts` is set to that same 44
+     for the same reason. Horizontal stays 10px: production's is a fixed
+     256px box with far less trailing content (a duration, right-aligned);
+     ours can carry an optional matrix/kind/warning badge cluster after the
+     label, so it keeps slightly more breathing room at the edges. */
+  padding: 8px 10px;
+  box-sizing: border-box;
+  overflow: hidden;
+  /* Real nodes rest at a shadow-md-equivalent elevation and lift to
+     shadow-lg with an accent border on hover; ported from CircleCI's real
+     DAG node styling (per the styling-pass audit). */
+  box-shadow:
+    0 1px 3px 0 rgb(0 0 0 / 0.3),
+    0 1px 2px -1px rgb(0 0 0 / 0.3);
+  transition:
+    box-shadow 150ms ease,
+    border-color 150ms ease;
+}
+
+.vce-dag-node:hover {
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.4),
+    0 4px 6px -4px rgb(0 0 0 / 0.4);
+  border-color: var(--color-cc-accent);
+}
+
+/*
+ * Every DAG node measured exactly 3px of horizontal overflow
+ * (scrollWidth > clientWidth by a constant 3px, regardless of label text --
+ * ruling out the width estimator). Root cause: React Flow's own base
+ * stylesheet positions side handles with `left: 0`/`right: 0` plus a 50%
+ * translate (`.react-flow__handle-left { left: 0; transform: translate(-50%,
+ * -50%); }`, and the mirror for `-right`), which straddles the node's
+ * border by design -- exactly half of the 6px handle, i.e. 3px, sticks out
+ * past each side. `.vce-dag-node`'s `overflow: hidden` clips this from
+ * view, but scrollWidth still counts the un-clipped extent. Pulling the
+ * handle fully inside the border (dropping the horizontal half of the
+ * translate) removes the overflow without changing anything in
+ * `JobNode.tsx`.
+ *
+ * The extra `.vce-dag-node` ancestor qualifier (rather than just
+ * `.vce-dag-handle.react-flow__handle-left`) is deliberate: it isn't needed
+ * structurally (a handle only ever renders inside a `.vce-dag-node`), but
+ * it raises this rule's specificity above React Flow's own same-two-class
+ * `.react-flow__handle-left`/`-right` rules so this override wins
+ * regardless of which stylesheet Vite happens to emit later in the merged
+ * CSS -- source order alone would otherwise decide a tie.
+ *
+ * Issue #70 later grew `.vce-dag-handle` itself from 6px to 14px (see its
+ * own rule below) for a bigger hit area. Re-verified at that size in a real
+ * browser (not just jsdom) that this still measures zero overflow: the fix
+ * here works by removing the *horizontal* half of React Flow's translate
+ * entirely, not by compensating for a specific handle size, so `left: 0`/
+ * `right: 0` keeps anchoring the handle flush to the padding edge (1px
+ * inside the border) regardless of how wide the handle itself is.
+ */
+.vce-dag-node .vce-dag-handle.react-flow__handle-left {
+  left: 0;
+  transform: translateY(-50%);
+}
+
+.vce-dag-node .vce-dag-handle.react-flow__handle-right {
+  right: 0;
+  transform: translateY(-50%);
+}
+
+.vce-dag-node--approval {
+  border-style: dashed;
+  border-color: var(--color-cc-accent);
+}
+
+.vce-dag-node--orb {
+  border-color: color-mix(
+    in srgb,
+    var(--color-cc-accent) 60%,
+    var(--color-cc-border-strong)
+  );
+}
+
+/*
+ * Issue #220: a `job-groups` invocation. It runs several jobs as one unit, so
+ * it is drawn as one node -- but a double border says "there is more inside
+ * this than the single name you can see", without borrowing the dashed
+ * treatment that already means "approval" or the warning colours that mean
+ * "broken". A job group is perfectly valid config; nothing about it may read
+ * as a problem.
+ */
+.vce-dag-node--group {
+  border-style: double;
+  border-width: 3px;
+  border-color: color-mix(
+    in srgb,
+    var(--color-cc-accent) 45%,
+    var(--color-cc-border-strong)
+  );
+}
+
+.vce-dag-node--undefined {
+  border-color: var(--color-cc-warning);
+  background-color: color-mix(
+    in srgb,
+    var(--color-cc-warning) 10%,
+    var(--color-cc-panel-raised)
+  );
+}
+
+/*
+ * Issue #12: a synthesised placeholder for a `requires:` target nothing in the
+ * workflow provides (see `buildGraph`'s `missingNode`). Read deliberately as a
+ * *hole* rather than as a job in a bad state -- dashed danger-toned border, no
+ * fill tint -- because there is no config line behind it to fix in place; the
+ * fix is always elsewhere (the `requires:` that names it, or the entry it is
+ * asking for). Distinct from `.vce-dag-node--undefined`, which is a real entry
+ * whose job definition is merely absent: that one is warning-toned and fully
+ * editable, this one is an error and inert.
+ */
+.vce-dag-node--missing {
+  border-style: dashed;
+  border-color: var(--color-cc-danger);
+  background-color: transparent;
+  color: var(--color-cc-text-muted);
+}
+
+.vce-dag-missing-label {
+  color: var(--color-cc-danger);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.vce-dag-node--selected {
+  border-color: var(--color-cc-accent);
+  border-width: 2px;
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--color-cc-accent) 30%, transparent);
+}
+
+/*
+ * Issue #148: this node is named by a validation error -- the owner's first
+ * ask was "highlight nicely in the graph where the error is". Deliberately
+ * distinct from both neighbouring states:
+ *
+ *   --undefined   warning-toned tint, for a *structural* observation this app
+ *                 made locally (no `jobs:` entry with that name).
+ *   --missing     a dashed hole standing in for something that isn't there.
+ *   --diagnostic  a danger ring on a node that is otherwise perfectly normal
+ *                 and fully editable: the config no longer compiles, and this
+ *                 is the entry the validator named.
+ *
+ * A ring (`box-shadow`) rather than a border colour, so it composes with
+ * `--selected`'s own accent border instead of fighting it: an errored node the
+ * user has selected must still read as selected.
+ */
+.vce-dag-node--diagnostic {
+  box-shadow:
+    0 0 0 2px var(--color-cc-danger),
+    0 0 12px color-mix(in srgb, var(--color-cc-danger) 35%, transparent);
+}
+
+.vce-dag-node--diagnostic.vce-dag-node--selected {
+  box-shadow:
+    0 0 0 2px var(--color-cc-danger),
+    0 0 0 4px color-mix(in srgb, var(--color-cc-accent) 45%, transparent);
+}
+
+/* The small "error" badge on an errored node's label row -- same danger token
+   as the ring above, so both track one palette. */
+.vce-dag-error-label {
+  color: var(--color-cc-danger);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+/* An orb command/executor is currently dragged over this node -- see
+   `JobNode`'s `onDragOver`. `--drop-valid` means this node would accept the
+   drop (a locally-defined job); `--drop-invalid` means it would be refused
+   (an approval/orb/undefined node), so the user sees the refusal *before*
+   letting go, not just after. */
+.vce-dag-node--drop-valid {
+  border-color: var(--color-cc-success);
+  border-width: 2px;
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--color-cc-success) 35%, transparent);
+}
+
+.vce-dag-node--drop-invalid {
+  border-color: var(--color-cc-danger);
+  border-width: 2px;
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--color-cc-danger) 35%, transparent);
+}
+
+/* Issue #70: the pending "connect from" anchor of an in-progress *keyboard*
+   connection (see `DagPane`'s `keyboardConnectFromId` and `JobNodeData`'s
+   `isKeyboardConnectSource`). Mouse-drag's own equivalent state
+   (`.connectingfrom`, below) is exposed by React Flow directly on the
+   handle element and doesn't need a class here -- this one exists because
+   the keyboard flow's "which node is anchored" state lives in `DagPane`,
+   not React Flow, so it has to be threaded through node data instead of
+   CSS alone. */
+.vce-dag-node--connect-source {
+  border-color: var(--color-cc-accent);
+  border-width: 2px;
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--color-cc-accent) 35%, transparent);
+}
+
+/* Issue #85: the other half of making a drag legible -- the position fix
+   above (see `DagPane`'s `liveDragPositions`) makes the node actually
+   follow the cursor, but React Flow's own `dragging` state (surfaced here
+   via `NodeProps.dragging`, see `JobNode`'s className) had no styling at
+   all, so a moving node still didn't read as "picked up". A lift (deeper
+   shadow, same shape `.vce-dag-node:hover` already uses one step up from,
+   plus the accent border every other "this is the thing you're acting on"
+   state in this file uses) rather than a scale/rotate: those change the
+   node's rendered box size, which would fight React Flow's own drag-ghost
+   positioning math. */
+.vce-dag-node--dragging {
+  border-color: var(--color-cc-accent);
+  box-shadow:
+    0 20px 25px -5px rgb(0 0 0 / 0.5),
+    0 8px 10px -6px rgb(0 0 0 / 0.5);
+}
+
+/* An orb job is currently dragged over the DAG canvas background -- see
+   `DagPane`'s canvas wrapper `onDragOver`. Same valid/invalid split as
+   `.vce-dag-node--drop-*` above, keyed off whether a workflow exists to drop
+   the job into. */
+.vce-dag-canvas--drop-valid {
+  outline: 2px dashed var(--color-cc-success);
+  outline-offset: -4px;
+}
+
+.vce-dag-canvas--drop-invalid {
+  outline: 2px dashed var(--color-cc-danger);
+  outline-offset: -4px;
+}
+
+/* The small "x" that appears in a selected node's corner -- see `JobNode`'s
+   `onRequestDelete`. Sits *inside* the node's own bounds (not overflowing
+   past its edge) since `.vce-dag-node` clips overflow. `.nodrag` (a React
+   Flow convention) keeps clicking it from also starting a node drag. */
+.vce-dag-delete-affordance {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--color-cc-border-strong);
+  background-color: var(--color-cc-panel);
+  color: var(--color-cc-text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.vce-dag-delete-affordance:hover {
+  border-color: var(--color-cc-danger);
+  color: var(--color-cc-danger);
+}
+
+.vce-dag-approval-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--color-cc-accent);
+  color: var(--color-cc-accent);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+
+.vce-dag-matrix-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--color-cc-accent) 18%, transparent);
+  color: var(--color-cc-accent);
+  font-size: 9px;
+  font-family: var(--font-mono);
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+
+.vce-dag-kind-label {
+  color: var(--color-cc-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.vce-dag-warning-label {
+  color: var(--color-cc-warning);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+/*
+ * Issue #220: `serial-group`. Deliberately shaped like the matrix badge (a
+ * filled pill, not a bare label) because it says the same *kind* of thing --
+ * "this entry's run-time behaviour is not what the graph's edges alone imply"
+ * -- and deliberately not in the warning colour, since serialising a
+ * deployment across an org is a thing users do on purpose.
+ */
+.vce-dag-serial-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--color-cc-accent) 14%, transparent);
+  color: var(--color-cc-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0 4px;
+  flex-shrink: 0;
+}
+
+/*
+ * Issue #70: "it's really hard to hit that little circle to link, and
+ * there's not really a good indication to go ahead and do that." React
+ * Flow has no separate "interaction radius" for a `<Handle>` the way an
+ * edge gets `interactionWidth` -- the hit area *is* the rendered element --
+ * so the only way to make it easier to grab is to make this element itself
+ * bigger. The visible dot stays the old 6px (drawn by the `::after` below,
+ * centred inside this box via `inset: 0; margin: auto`) so this doesn't
+ * change how dense the canvas reads at a glance, only how forgiving it is
+ * to actually hit; `connectionRadius={36}` on `<ReactFlow>` (`DagPane.tsx`)
+ * covers the mouse-drag *release* side of the same complaint, for a drop
+ * that lands just outside even this enlarged box.
+ *
+ * `cursor: crosshair` is the same affordance production's own DAG uses on
+ * a connectable handle -- distinct from the node body's default cursor, so
+ * hovering the handle itself already reads as "this does something
+ * different from dragging the node."
+ */
+.vce-dag-handle {
+  width: 14px;
+  height: 14px;
+  background-color: transparent;
+  border: none;
+  border-radius: 50%;
+  cursor: crosshair;
+}
+
+.vce-dag-handle::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--color-cc-border-strong);
+  transition:
+    width 120ms ease,
+    height 120ms ease,
+    background-color 120ms ease;
+}
+
+/*
+ * Discoverability: hovering *anywhere on the node* already tints its own
+ * connectors accent-coloured (production has no direct equivalent here
+ * since its job cards aren't manually connectable, but this mirrors how
+ * this pane already treats a node hover as "something on this node is now
+ * interactive" -- see `.vce-dag-node:hover`'s own box-shadow lift, just
+ * above). Hovering/focusing the dot itself goes further -- also grows it --
+ * since that's the one moment a user is specifically deciding whether this
+ * is "the little circle to link". `:focus-visible`, not `:focus`, so a
+ * completed keyboard connection (which briefly leaves the handle focused
+ * mid-flow) doesn't look permanently "hovered" once the pointer has
+ * genuinely moved on; see `JobNode.tsx` for the Enter/Space handling this
+ * focus target exists for in the first place.
+ */
+.vce-dag-node:hover .vce-dag-handle::after {
+  background-color: var(--color-cc-accent);
+}
+
+.vce-dag-handle:hover::after,
+.vce-dag-handle:focus-visible::after {
+  width: 10px;
+  height: 10px;
+  background-color: var(--color-cc-accent);
+}
+
+.vce-dag-handle:focus-visible {
+  outline: 2px solid var(--color-cc-accent);
+  outline-offset: 1px;
+}
+
+/*
+ * React Flow itself already computes per-handle connection-state classes
+ * while a mouse drag is in progress, driven by this pane's own
+ * `isValidConnection` (which calls `wouldCreateCycle`) -- `connectingfrom`
+ * on the handle the drag started from, `connectingto` on whichever handle
+ * the pointer currently sits over, and `valid` alongside `connectingto`
+ * when dropping there would actually succeed. None of the three had any
+ * styling before this, so that signal existed but was invisible; this is
+ * the "clear valid/invalid feedback while dragging" half of the issue,
+ * effectively free once styled.
+ */
+.vce-dag-handle.connectingfrom::after {
+  width: 10px;
+  height: 10px;
+  background-color: var(--color-cc-accent);
+}
+
+.vce-dag-handle.connectingto::after {
+  width: 12px;
+  height: 12px;
+}
+
+.vce-dag-handle.connectingto.valid::after {
+  background-color: var(--color-cc-success);
+}
+
+.vce-dag-handle.connectingto:not(.valid)::after {
+  background-color: var(--color-cc-danger);
+}
+
+/*
+ * Echoes the same valid/invalid read across the *whole* candidate node,
+ * not just its 14px handle -- much easier to notice mid-drag on a canvas
+ * that can be zoomed out to a fraction of its size. `:has()` is Chrome/
+ * Firefox/Safari 2023+; acceptable here since this is this app's own
+ * canvas chrome, not content that needs to degrade further, and the
+ * alternative (threading connect-target state through JS the way
+ * `hoveredNodeId` already does for edge-hover in `DagPane.tsx`) is a lot
+ * more machinery for the same visual result.
+ */
+.vce-dag-node:has(.vce-dag-handle.connectingto.valid) {
+  border-color: var(--color-cc-success);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--color-cc-success) 35%, transparent);
+}
+
+.vce-dag-node:has(.vce-dag-handle.connectingto:not(.valid)) {
+  border-color: var(--color-cc-danger);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--color-cc-danger) 35%, transparent);
+}
+
+/*
+ * The connection line drawn from the anchor to the pointer while dragging
+ * also carries a validity class (`getConnectionStatus` in `@xyflow/system`,
+ * driven by the same `isValidConnection`) -- `.react-flow__connection.valid`
+ * / `.invalid` on its wrapping `<g>`. Styled here for the same reason as
+ * the handle states above: React Flow already computes this, nothing here
+ * previously rendered it.
+ */
+.react-flow__connection.valid .react-flow__connection-path {
+  stroke: var(--color-cc-success);
+  stroke-width: 2px;
+}
+
+.react-flow__connection.invalid .react-flow__connection-path {
+  stroke: var(--color-cc-danger);
+  stroke-width: 2px;
+}
+
+/*
+ * Real CircleCI DAG edges carry an `ArrowClosed` marker end; `DagPane.tsx`
+ * now sets that `markerEnd` on every edge (issue #54). React Flow's default
+ * marker SVG uses the `context-stroke` keyword, so it automatically picks up
+ * whatever colour these `stroke` rules set below (including the
+ * `selected`/`:hover` accent override, and the `--highlighted`/`--dimmed`
+ * rules further down) with no extra selector needed.
+ */
+.react-flow__edge-path {
+  stroke: var(--color-cc-border-strong);
+  stroke-width: 1.5px;
+}
+
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--color-cc-accent);
+}
+
+/*
+ * Issue #54. `.vce-dag-edge--highlighted` is applied by `DagPane`'s
+ * `flowEdges` in two cases: the edge sits on the selected node's ancestor
+ * chain, or (with nothing selected) it touches the currently-hovered node.
+ * Same accent colour as the plain `:hover`/`.selected` rule above, at
+ * production's `strokeWidth: 2` (recovered from `WorkflowDagDialog.tsx`'s
+ * edge hover treatment) rather than that rule's implicit 1.5px, so a
+ * JS-driven highlight reads at least as strongly as hovering the path
+ * itself.
+ */
+.vce-dag-edge--highlighted .react-flow__edge-path {
+  stroke: var(--color-cc-accent);
+  stroke-width: 2px;
+}
+
+/*
+ * Selecting a node highlights its ancestor chain and dims everything else
+ * to `opacity: 0.3` -- ground-truthed against production's own select
+ * behaviour. Applied to both edges (`.vce-dag-edge--dimmed`, this file) and
+ * nodes (`.vce-dag-node--dimmed`, landing on React Flow's node wrapper
+ * rather than `JobNode`'s own inner markup so one rule dims the whole node
+ * -- box, handles, delete affordance -- at once). `.vce-dag-fade` is added
+ * alongside these only under `LARGE_GRAPH_THRESHOLD` (see `DagPane.tsx`),
+ * so a large graph's dim/undim is instant instead of animating dozens of
+ * elements at once.
+ */
+/*
+ * Issue #12: an edge whose source is a `missing` placeholder -- a broken
+ * dependency. Dashed and danger-toned so the break is legible at a glance and
+ * unmistakably not a normal dependency, while still being drawn: seeing the
+ * breakage is the whole point, and an edge that silently isn't there is the
+ * bug this replaces.
+ */
+.vce-dag-edge--dangling .react-flow__edge-path {
+  stroke: var(--color-cc-danger);
+  stroke-dasharray: 4 3;
+}
+
+.vce-dag-edge--dimmed,
+.vce-dag-node--dimmed {
+  opacity: 0.3;
+}
+
+.vce-dag-fade {
+  transition: opacity 0.3s ease-in-out;
+}
+
+/*
+ * Issue #70: replaces the old always-on edge label for a status-conditioned
+ * `requires` (`- job: [success, failed]`) with a small persistent dot (so
+ * the *existence* of a condition stays visible without hovering anything)
+ * plus a tooltip with the actual statuses on hover/focus -- see
+ * `RequiresEdge.tsx`, which renders this via `<EdgeLabelRenderer>` rather
+ * than an SVG `<text>` specifically so it can be a real, focusable DOM
+ * element. `pointer-events: auto` is required: `EdgeLabelRenderer`'s own
+ * wrapper (`.react-flow__edgelabel-renderer`, React Flow's base stylesheet)
+ * sets `pointer-events: none` so it never blocks canvas panning/clicks by
+ * default, which would otherwise make this element unhoverable and
+ * unfocusable too.
+ */
+.vce-dag-edge-condition {
+  position: absolute;
+  pointer-events: auto;
+  cursor: help;
+}
+
+.vce-dag-edge-condition__dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--color-cc-warning);
+  border: 1px solid var(--color-cc-bg);
+  transition: transform 120ms ease;
+}
+
+.vce-dag-edge-condition:hover .vce-dag-edge-condition__dot,
+.vce-dag-edge-condition:focus-visible .vce-dag-edge-condition__dot {
+  transform: scale(1.4);
+}
+
+.vce-dag-edge-condition:focus-visible {
+  outline: 2px solid var(--color-cc-accent);
+  outline-offset: 2px;
+  border-radius: 50%;
+}
+
+/* Hidden via `opacity`/`visibility` (not `display: none`) so the hover/
+   focus transition can animate it in, and so a screen reader that already
+   found this via `role="tooltip"` isn't fighting a `display` toggle. */
+.vce-dag-edge-condition__tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--color-cc-border-strong);
+  background-color: var(--color-cc-panel);
+  color: var(--color-cc-text);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  box-shadow: 0 4px 10px -2px rgb(0 0 0 / 0.4);
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+  z-index: 20;
+}
+
+.vce-dag-edge-condition:hover .vce-dag-edge-condition__tooltip,
+.vce-dag-edge-condition:focus-visible .vce-dag-edge-condition__tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+/*
+ * Issue #289: the unlink half of the drag-to-link affordance -- rendered via
+ * `EdgeLabelRenderer` (a real DOM element, not SVG, so it can be a real
+ * `<button>`) once its edge is hovered or selected (`RequiresEdge.tsx`'s
+ * `canRemove`). Same visual language as `.vce-dag-delete-affordance` (the
+ * node's own "×" in a selected node's corner) rather than a new one, since
+ * both mean exactly the same thing: "remove this". `pointer-events: auto`
+ * for the same reason `.vce-dag-edge-condition` needs it -- React Flow's
+ * `EdgeLabelRenderer` wrapper defaults to `pointer-events: none` so it never
+ * blocks canvas panning by default, which would make this unhoverable and
+ * unclickable too.
+ */
+.vce-dag-edge-delete-affordance {
+  position: absolute;
+  pointer-events: auto;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--color-cc-border-strong);
+  background-color: var(--color-cc-panel);
+  color: var(--color-cc-text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 20;
+}
+
+.vce-dag-edge-delete-affordance:hover,
+.vce-dag-edge-delete-affordance:focus-visible {
+  border-color: var(--color-cc-danger);
+  color: var(--color-cc-danger);
+}
+
+.vce-dag-edge-delete-affordance:focus-visible {
+  outline: 2px solid var(--color-cc-accent);
+  outline-offset: 1px;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+/*
+ * React Flow ships light-theme defaults for its minimap and controls, which
+ * used to render as glaring white blocks inside this app's (then dark-only)
+ * panels. Restyle them to this app's own theme-aware surface tokens instead
+ * of React Flow's per-mode palette, so the canvas reads as one piece of the
+ * product in *either* theme rather than needing a light and a dark version
+ * of each override.
+ *
+ * `DagPane.tsx` also passes its own resolved theme as `colorMode` on the
+ * <ReactFlow> element (issue #52) -- without it React Flow defaults to light
+ * regardless of what these rules say, which used to leave a few things
+ * (e.g. the attribution link, cursor affordances) unpatched because they
+ * weren't worth hand-overriding here. These ~12 rules stay in place either
+ * way: they don't depend on which mode React Flow believes it's in, and
+ * still handle the pieces `colorMode` alone doesn't reach.
+ */
+/*
+ * Issue #70 ("the minimap is now somewhat working, but doesn't necessarily
+ * show and render the minimap as nice"): panel chrome now matches this
+ * pane's other floating surfaces (`ProblemsBanner`, the orb browser drawer)
+ * -- a raised elevation shadow, not just a flat border, so it reads as
+ * chrome sitting *above* the canvas rather than a rectangle drawn on it.
+ * `overflow: hidden` clips the inner `<svg>`'s content to the rounded
+ * corners, matching `.vce-dag-node`'s and `.react-flow__controls`'s own
+ * convention just below.
+ */
+.react-flow__minimap {
+  background-color: var(--color-cc-panel);
+  border: 1px solid var(--color-cc-border);
+  /* `var(--radius)` (issue #69) rather than the hardcoded 8px this rule used
+     to carry: the radius scale is now derived from production's own
+     `.625rem` surface radius, so every panel rounds consistently. */
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow:
+    0 4px 12px -2px rgb(0 0 0 / 0.35),
+    0 2px 4px -2px rgb(0 0 0 / 0.3);
+}
+
+/*
+ * The viewport mask -- the shape covering everything *outside* the current
+ * viewport. An accent-coloured dashed outline (rather than the previous
+ * plain 1px `--color-cc-border-strong`) is what actually reads as "this
+ * traces the edge of a viewport", the same visual language a camera
+ * frame/crop guide uses, instead of just a rectangle that happens to sit on
+ * top of the minimap.
+ */
+.react-flow__minimap-mask {
+  fill: color-mix(in srgb, var(--color-cc-bg) 55%, transparent);
+  stroke: var(--color-cc-accent);
+  stroke-width: 1.5px;
+  stroke-dasharray: 3 2;
+}
+
+/*
+ * Minimap node rectangles. These are only reachable at all because `flowNodes`
+ * carries `initialWidth`/`initialHeight` -- see the long comment there; with a
+ * CSS size alone React Flow renders no rects and the minimap looks broken.
+ *
+ * --color-cc-border-strong (#3a3d42) was the previous fill and measures a
+ * 1.15:1 contrast ratio against --color-cc-panel behind it, i.e. the shapes
+ * were technically present but not perceivable. These are non-text, purely
+ * decorative shapes so WCAG's 4.5:1 text floor doesn't apply, but they still
+ * have to be *seeable*: each kind below is tinted like its canvas node so the
+ * minimap reads as a scaled-down copy of the graph rather than grey mush.
+ *
+ * `stroke` here (new) is `--color-cc-panel`, not another grey: it draws a
+ * thin gap of the *background* colour between adjacent rects rather than a
+ * visible outline of its own, which is what makes tightly-packed nodes read
+ * as separate job cards instead of one fused blob at minimap scale.
+ */
+.react-flow__minimap-node {
+  fill: var(--color-cc-text-muted);
+  stroke: var(--color-cc-panel);
+  stroke-width: 1px;
+}
+
+/* Each kind below deliberately reuses the token its *canvas* node above is
+   drawn with, so the minimap is a legible scaled-down copy of the graph:
+   .vce-dag-node--approval and --orb key off --color-cc-accent, and a plain
+   job's neutral panel border reads as the muted default set above. */
+.vce-minimap-node--approval {
+  fill: var(--color-cc-accent);
+}
+
+.vce-minimap-node--orb {
+  fill: color-mix(
+    in srgb,
+    var(--color-cc-accent) 60%,
+    var(--color-cc-text-muted)
+  );
+}
+
+/* A workflow referencing a job that has no definition is the one problem worth
+   spotting from the minimap alone, so it carries --color-cc-dag-node-undefined's
+   warning hue exactly as .vce-dag-node--undefined does on the canvas. */
+.vce-minimap-node--undefined {
+  fill: var(--color-cc-warning);
+}
+
+/* Issue #148: a node a validation error names outranks even --undefined in the
+   minimap, for the same reason it does on the canvas -- "this is why your
+   pipeline won't run" is the single most useful thing to be able to spot
+   without zooming back in. */
+.vce-minimap-node--diagnostic {
+  fill: var(--color-cc-danger);
+}
+
+/*
+ * Issue #148: a line the validator's error could actually be placed on (see
+ * `panes/yaml/diagnosticLines.ts`). Only ever applied to a *resolved* line --
+ * an error with no location gets no tint anywhere, rather than a tint on a
+ * line we guessed.
+ *
+ * A left edge plus a faint wash, not a full-strength background: this sits
+ * underneath the syntax highlighting, and a strong fill would cost the code on
+ * that line its own contrast -- the exact failure mode `Badge`'s tone-tint
+ * comment records for the danger tone at 16%.
+ */
+.vce-diagnostic-line {
+  border-left: 2px solid transparent;
+  margin-left: -2px;
+}
+
+.vce-diagnostic-line--error {
+  background-color: color-mix(in srgb, var(--color-cc-danger) 12%, transparent);
+  border-left-color: color-mix(
+    in srgb,
+    var(--color-cc-danger) 60%,
+    transparent
+  );
+}
+
+.vce-diagnostic-line--warning {
+  background-color: color-mix(
+    in srgb,
+    var(--color-cc-warning) 12%,
+    transparent
+  );
+  border-left-color: color-mix(
+    in srgb,
+    var(--color-cc-warning) 60%,
+    transparent
+  );
+}
+
+/* The one the strip is currently showing, so stepping through problems with
+   Prev/Next is visible in the editor as well as in the strip. */
+.vce-diagnostic-line--primary {
+  border-left-color: var(--color-cc-danger);
+  background-color: color-mix(in srgb, var(--color-cc-danger) 20%, transparent);
+}
+
+.vce-diagnostic-line--warning.vce-diagnostic-line--primary {
+  border-left-color: var(--color-cc-warning);
+  background-color: color-mix(
+    in srgb,
+    var(--color-cc-warning) 20%,
+    transparent
+  );
+}
+
+.react-flow__controls {
+  border: 1px solid var(--color-cc-border);
+  border-radius: var(--radius); /* issue #69 -- was a hardcoded 8px */
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.react-flow__controls-button {
+  background-color: var(--color-cc-panel-raised);
+  border-bottom: 1px solid var(--color-cc-border);
+  color: var(--color-cc-text);
+  width: 26px;
+  height: 26px;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+
+.react-flow__controls-button:hover {
+  background-color: var(--color-cc-border);
+}
+
+.react-flow__controls-button svg {
+  fill: currentColor;
+  max-width: 12px;
+  max-height: 12px;
+}

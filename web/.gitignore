@@ -1,0 +1,4 @@
+# Playwright E2E artifacts.
+/playwright-report/
+/test-results/
+/.playwright/

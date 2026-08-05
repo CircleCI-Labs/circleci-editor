@@ -1,0 +1,459 @@
+version: 2.1
+
+parameters:
+  go_version:
+    type: string
+    default: "1.26.0"
+  node_version:
+    type: string
+    default: "22.20.0"
+
+executors:
+  linux:
+    docker:
+      - image: cimg/go:1.26-node
+    resource_class: large
+  macos:
+    macos:
+      xcode: "26.5"
+    # Apple silicon resource classes are m4pro.*; the older macos.m1.* names
+    # are not valid and cause the job to be cancelled before any step runs.
+    resource_class: m4pro.medium
+  windows:
+    machine:
+      image: windows-server-2022-gui:current
+      shell: bash.exe
+    resource_class: windows.medium
+
+commands:
+  install-task:
+    description: Install go-task and add it to the PATH
+    steps:
+      - run:
+          name: Install go-task
+          command: |
+            sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /home/circleci/bin
+            echo 'export PATH="/home/circleci/bin:$PATH"' >> "$BASH_ENV"
+
+  restore-go-cache:
+    description: Restore the Go module/build cache
+    steps:
+      - restore_cache:
+          keys:
+            - go-mod-v1-{{ checksum "go.sum" }}
+            - go-mod-v1-
+
+  save-go-cache:
+    description: Save the Go module/build cache
+    steps:
+      - save_cache:
+          key: go-mod-v1-{{ checksum "go.sum" }}
+          paths:
+            - /home/circleci/go/pkg/mod
+
+  install-go-macos:
+    description: |
+      Install Go on the macOS executor. The Xcode images do not ship Go, so
+      without this the test step fails with "go: command not found".
+    steps:
+      - run:
+          name: Install Go
+          command: |
+            GO_VERSION="<< pipeline.parameters.go_version >>"
+            curl -fsSL "https://go.dev/dl/go${GO_VERSION}.darwin-arm64.tar.gz" -o /tmp/go.tar.gz
+            sudo rm -rf /usr/local/go
+            sudo tar -C /usr/local -xzf /tmp/go.tar.gz
+            echo 'export PATH="/usr/local/go/bin:$PATH"' >> "$BASH_ENV"
+            /usr/local/go/bin/go version
+
+  install-web-deps:
+    description: Install web app dependencies with pnpm, using cache
+    steps:
+      - restore_cache:
+          keys:
+            - web-pnpm-v1-{{ checksum "web/pnpm-lock.yaml" }}
+            - web-pnpm-v1-
+      - run:
+          # corepack enable alone installs corepack's own default pnpm (v11 at
+          # time of writing), which then refuses to run because the project
+          # pins a different version and pnpm will not self-switch under
+          # corepack. Activating the exact pinned version fixes that, and the
+          # version is read from package.json so the two cannot drift.
+          name: Activate the pinned pnpm version
+          command: |
+            corepack enable
+            PNPM_VERSION="$(node -p "require('./web/package.json').packageManager.split('@')[1]")"
+            echo "Activating pnpm ${PNPM_VERSION}"
+            corepack prepare "pnpm@${PNPM_VERSION}" --activate
+            pnpm --version
+      - run:
+          name: Install web dependencies
+          command: pnpm --dir web install --frozen-lockfile
+      - save_cache:
+          key: web-pnpm-v1-{{ checksum "web/pnpm-lock.yaml" }}
+          paths:
+            - web/node_modules
+
+jobs:
+  check:
+    executor: linux
+    steps:
+      - checkout
+      - install-task
+      - restore-go-cache
+      - run:
+          name: Install golangci-lint
+          command: |
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.10.1
+      - run:
+          name: Install Go dev tools
+          command: task tools:install
+      - install-web-deps
+      - run:
+          name: Check formatting (Go)
+          command: task fmt:check
+      - run:
+          name: Lint (Go)
+          command: task lint
+      - run:
+          # First in the job on purpose: it costs milliseconds and catches a
+          # class of damage every other step here is blind to. Three conflict
+          # markers once reached main inside a long docs file and survived a
+          # full green run of tsc, 1735 unit tests and Playwright, because
+          # nothing compiles or imports a Markdown file. See issue #174.
+          name: Check repository integrity
+          command: scripts/check-repo-integrity.sh
+      - run:
+          name: Check license headers
+          command: task license:check
+      - run:
+          name: Check go.mod/go.sum tidiness
+          command: task tidy:check
+      - run:
+          name: Check formatting (web)
+          command: task web:format
+      - run:
+          name: Lint (web)
+          command: task web:lint
+      - run:
+          name: Type-check (web)
+          command: task web:typecheck
+      - save-go-cache
+
+  test-go:
+    parameters:
+      os:
+        type: string
+    executor: << parameters.os >>
+    steps:
+      - when:
+          condition:
+            equal: [macos, << parameters.os >>]
+          steps:
+            - install-go-macos
+      - checkout
+      # The module cache path is Linux-image specific, so only the Linux leg
+      # of the matrix caches. The other two download modules each run.
+      - when:
+          condition:
+            equal: [linux, << parameters.os >>]
+          steps:
+            - restore-go-cache
+      # The Windows executor selects bash.exe at the machine level, so one
+      # step definition works on all three platforms.
+      - run:
+          name: Run Go tests
+          command: |
+            mkdir -p test-reports
+            go install gotest.tools/gotestsum@v1.13.0 || true
+            # The race detector requires cgo, and the Windows image has no C
+            # toolchain, so that leg runs without it. Linux and macOS still
+            # exercise the race detector.
+            RACE="-race"
+            if [ "<< parameters.os >>" = "windows" ]; then
+              RACE=""
+              echo "Windows: running without -race (requires cgo)"
+            fi
+            if command -v gotestsum >/dev/null 2>&1; then
+              gotestsum --junitfile test-reports/tests.xml -- ${RACE} ./...
+            else
+              go test ${RACE} ./...
+            fi
+      - when:
+          condition:
+            equal: [linux, << parameters.os >>]
+          steps:
+            - save-go-cache
+      - store_test_results:
+          path: test-reports
+
+  test-web:
+    executor: linux
+    steps:
+      - checkout
+      - install-web-deps
+      - run:
+          name: Run web tests
+          command: pnpm --dir web test:run
+      - run:
+          name: Build web app
+          command: pnpm --dir web build
+
+  test-e2e:
+    executor: linux
+    steps:
+      - checkout
+      - install-web-deps
+      - run:
+          name: Install Playwright browser (Chromium)
+          command: pnpm --dir web exec playwright install --with-deps chromium
+      - run:
+          name: Run browser E2E tests
+          command: pnpm --dir web test:e2e
+      - store_test_results:
+          path: web/test-results
+      - store_artifacts:
+          path: web/playwright-report
+      - store_artifacts:
+          path: web/test-results
+
+  validate-own-config:
+    executor: linux
+    steps:
+      - checkout
+      - run:
+          name: Install CircleCI CLI
+          command: curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/main/install.sh | sudo bash
+      - run:
+          # `circleci config validate` is server-side: it posts the config to
+          # the compile endpoint, so it needs a CircleCI API token. It used to
+          # pass here with no token at all, and stopped -- this job installs the
+          # CLI from the head of `circleci-cli`'s main branch on every run, so an
+          # upstream change lands in our CI with no version bump on our side.
+          #
+          # A token cannot simply be added: CircleCI does not share context
+          # secrets with pull requests from forks, so a token-gated step here
+          # would fail every outside contributor's first PR. That is the wrong
+          # trade for a public repository, and no read-only CircleCI API context
+          # exists to use anyway (`devex-release` is write-scoped and is
+          # deliberately kept away from fork-facing jobs).
+          #
+          # So: validate when a token happens to be available, and say plainly
+          # why it was skipped when one is not. See issue #314 for restoring a
+          # real check -- either a read-only context, or offline validation
+          # against the schema this repo already vendors.
+          name: "Dogfood: validate this repo's own CircleCI config"
+          command: |
+            if [ -z "${CIRCLE_TOKEN:-}" ]; then
+              echo "SKIPPED: circleci config validate needs a CircleCI API token,"
+              echo "and none is available on this build (see issue #314)."
+              echo "This is a deliberate skip, not a passing validation."
+              exit 0
+            fi
+            circleci config validate .circleci/config.yml
+
+  # Issue #119: this repo squash-merges, so a PR's title (not its commits)
+  # becomes the subject release-please parses on main. #114, #115 and #101
+  # all had non-Conventional-Commits titles that release-please silently
+  # dropped from the generated release notes rather than erroring --
+  # discovered only by hand-diffing the notes after release. This job fails the PR's own
+  # CircleCI build instead, before merge. See scripts/check-pr-title.sh for
+  # why CIRCLE_PULL_REQUEST (rather than a second GitHub Actions workflow)
+  # is a reachable, sufficient signal, and for the one real gap it has: an
+  # edited title does not by itself retrigger a CircleCI build, so a stale
+  # pass can survive a post-push title edit until the next commit.
+  pr-title-lint:
+    executor: linux
+    steps:
+      - checkout
+      - run:
+          name: Lint the PR title against Conventional Commits
+          command: scripts/check-pr-title.sh
+
+  # Issue #119's belt-and-braces check: fails if any commit subject on main
+  # since the last tag is not a Conventional Commit release-please will act
+  # on, catching the failure directly (a bad subject already on main)
+  # instead of by proxy (a bad PR title, which pr-title-lint checks before
+  # merge but which a hand-edited squash-commit message could still evade).
+  check-main-history:
+    executor: linux
+    steps:
+      - checkout
+      - run:
+          name: Check that every commit subject on main is a Conventional Commit
+          command: scripts/check-main-history.sh
+
+  build:
+    executor: linux
+    steps:
+      - checkout
+      - install-task
+      - restore-go-cache
+      - install-web-deps
+      - run:
+          name: Build
+          command: task build
+      - save-go-cache
+      - store_artifacts:
+          path: bin
+
+  ok-to-deploy:
+    executor: linux
+    steps:
+      - run:
+          name: All required checks passed
+          command: echo "all checks green"
+
+  # Runs release-please as a CLI instead of googleapis/release-please-action,
+  # so this stays on CircleCI like everything else in the pipeline instead of
+  # being the repo's one GitHub Actions workflow (the owner's explicit ask;
+  # see CONTRIBUTING.md). Gated behind ok-to-deploy rather than triggered
+  # directly on push, which is a deliberate improvement on the Action's own
+  # trigger: the Action ran unconditionally on every push to main, so a
+  # flaky or genuinely broken main could still get a release PR opened
+  # against it. Requiring the same green build ok-to-deploy already gates
+  # deploys behind means release-please only ever acts once main is known
+  # good.
+  #
+  # release-pr and github-release are each idempotent and safe to run on
+  # every qualifying push: release-pr is a no-op if there is nothing new to
+  # release, and github-release is a no-op unless the commit it's looking at
+  # is itself the merge of a pending release PR (identified by the
+  # "autorelease: pending" label, both commands' shared default -- see the
+  # github-release step's own comment below for why that label matters here).
+  release-please:
+    executor: linux
+    steps:
+      - checkout
+      - run:
+          # Probe the token's permissions before running release-please, which
+          # reports a permission gap as ~300 lines of GraphQL stack trace
+          # naming neither the resource nor the permission. See the script.
+          name: Check GITHUB_TOKEN can do what release-please needs
+          command: scripts/release-please-preflight.sh
+      - run:
+          # npx, not a global `npm install`: cimg/go:*-node runs as a
+          # non-root user, and a global install's write target depends on
+          # how that image configured npm's prefix -- npx sidesteps the
+          # question entirely (it caches under the user's own npm cache on
+          # first run) and is what was actually used to verify this job's
+          # commands locally.
+          name: Open or update the release PR
+          command: |
+            npx --yes release-please@17.10.4 release-pr \
+              --token="$GITHUB_TOKEN" \
+              --repo-url="CircleCI-Labs/circleci-editor" \
+              --config-file=release-please-config.json \
+              --manifest-file=.release-please-manifest.json
+      - run:
+          # Only actually creates a tag + GitHub release when HEAD is the
+          # merge of a release PR carrying the "autorelease: pending" label
+          # (release-pr's and github-release's shared default --label,
+          # deliberately left unset/unoverridden here). A release PR opened
+          # by any other means lacks that label and is invisible to this
+          # step -- exactly the failure issue #66 recorded ("the tag has to
+          # be pushed manually too") when a release PR was opened by hand
+          # instead of by release-please itself. See CONTRIBUTING.md's releasing
+          # section for why this label is load-bearing.
+          name: Tag and publish a GitHub release, if main's HEAD just merged a pending release PR
+          command: |
+            npx --yes release-please@17.10.4 github-release \
+              --token="$GITHUB_TOKEN" \
+              --repo-url="CircleCI-Labs/circleci-editor" \
+              --config-file=release-please-config.json \
+              --manifest-file=.release-please-manifest.json
+
+  release:
+    executor: linux
+    steps:
+      - checkout
+      - install-task
+      - restore-go-cache
+      - install-web-deps
+      # Ordering matters: the Go binary embeds the built web bundle, so the
+      # web build must complete first or the release ships a binary that
+      # serves the "not built yet" placeholder page.
+      - run:
+          name: Build the web bundle
+          command: task web:build
+      - run:
+          name: Install GoReleaser
+          command: go install github.com/goreleaser/goreleaser/v2@v2.16.0
+      - run:
+          name: Publish the release
+          # GITHUB_TOKEN comes from the devex-release context and needs
+          # permission to create releases on this repository.
+          command: goreleaser release --clean
+      - store_artifacts:
+          path: dist
+
+workflows:
+  ci:
+    jobs:
+      - check
+      - test-go:
+          matrix:
+            parameters:
+              os: [linux, macos, windows]
+      - test-web
+      - test-e2e
+      - validate-own-config
+      - build
+      # Runs on every branch, including PR branches from forks/contributors
+      # nobody has reviewed yet -- context is a read-only PR lookup token,
+      # deliberately never the write-scoped release context (see
+      # scripts/check-pr-title.sh).
+      - pr-title-lint:
+          context:
+            - github-pr-read
+      - check-main-history:
+          filters:
+            branches:
+              only: main
+      - ok-to-deploy:
+          requires:
+            - check
+            - test-go
+            - test-web
+            - test-e2e
+            - validate-own-config
+            - build
+            - pr-title-lint
+            - check-main-history
+          filters:
+            branches:
+              only: main
+      - release-please:
+          requires:
+            - ok-to-deploy
+          context:
+            - devex-release
+          filters:
+            branches:
+              only: main
+
+  # Tag-triggered release. Tags are created by merging the release PR that
+  # release-please opens (see CONTRIBUTING.md's releasing section).
+  release:
+    jobs:
+      - check:
+          filters: &release-filters
+            branches:
+              ignore: /.*/
+            tags:
+              only: /^v\d+\.\d+\.\d+$/
+      - test-go:
+          matrix:
+            parameters:
+              os: [linux]
+          filters: *release-filters
+      - test-web:
+          filters: *release-filters
+      - release:
+          requires:
+            - check
+            - test-go
+            - test-web
+          context:
+            - devex-release
+          filters: *release-filters

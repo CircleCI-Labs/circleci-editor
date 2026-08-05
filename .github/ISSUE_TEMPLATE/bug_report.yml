@@ -1,0 +1,72 @@
+name: Bug Report
+description: Report a problem with the CircleCI Visual Config Editor
+title: "fix: <short description of the bug>"
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Please fill out the
+        sections below as completely as you can.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `circleci editor --version` (or the git commit if built from source)
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: OS and version you're running on
+      placeholder: macOS 15.5 / Ubuntu 24.04 / Windows 11
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config snippet
+      description: A minimal `.circleci/config.yml` snippet that reproduces the issue, if applicable
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you do, step by step?
+      placeholder: |
+        1. Run `circleci editor`
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Any error messages or logs from the terminal or browser console
+      render: shell
+    validations:
+      required: false

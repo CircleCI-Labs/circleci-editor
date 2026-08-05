@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CircleCI Visual Config Editor</title>
+    <!--
+      Issue #52 (light/dark mode): sets `data-theme` before the stylesheet
+      paints anything, so there is no flash of the wrong theme while
+      `~/state/themeStore` (which owns this logic the rest of the time) is
+      still loading as part of the main JS bundle. Deliberately duplicated
+      rather than imported from that module: this has to be a plain
+      synchronous inline script that runs before the `<link>`/module script
+      below, and Vite has no way to inline a *shared* module's code as a
+      blocking, unbundled `<head>` script -- importing the real module here
+      would pull in zustand and defeat the point. Keep this in sync with
+      `themeStore.ts`'s `readPersistedThemePreference`/`resolveTheme` if the
+      storage key, schema, or resolution rule ever changes.
+    -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('vce.theme');
+          var parsed = raw ? JSON.parse(raw) : null;
+          var preference =
+            parsed &&
+            parsed.schemaVersion === 1 &&
+            (parsed.preference === 'light' || parsed.preference === 'dark')
+              ? parsed.preference
+              : 'system';
+          var resolved =
+            preference === 'system'
+              ? window.matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light'
+              : preference;
+          document.documentElement.setAttribute('data-theme', resolved);
+        } catch (e) {
+          // Storage/matchMedia unavailable (private browsing, an ancient
+          // browser) -- fall back to this app's historical dark-only look
+          // rather than leaving every colour token undefined.
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

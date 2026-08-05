@@ -1,0 +1,151 @@
+# Copyright (c) 2026 Circle Internet Services, Inc.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of
+# this software and associated documentation files (the "Software"), to deal in
+# the Software without restriction, including without limitation the rights to
+# use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+# the Software, and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+# FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+# COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+# IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+# SPDX-License-Identifier: MIT
+
+version: 2
+
+# IMPORTANT — build ordering:
+#
+# This binary embeds the SPA via go:embed from internal/webassets/dist (see
+# that package's doc comment). GoReleaser only runs `go build`; it never runs
+# the web build. If the SPA has not been built first, go:embed falls back to
+# the committed placeholder.html, and every release binary would silently
+# ship a "please build the web assets" page instead of the real UI.
+#
+# The release pipeline MUST run, in order:
+#   1. task web:build   (or: pnpm --dir web install && pnpm --dir web build)
+#   2. goreleaser release ...
+# in the same job/workspace, so internal/webassets/dist is populated with a
+# real build before GoReleaser's `go build` embeds it. Do not add a
+# `pnpm`/`task web:build` call to before.hooks below: hooks here run once,
+# immediately before every target's `go build`, which is the wrong place to
+# do a one-time web build (and CI already does it as a separate, earlier
+# step — see .circleci/config.yml).
+before:
+  hooks:
+    # Deliberately not `go mod tidy`: that can rewrite go.mod/go.sum (e.g.
+    # if the release runner's Go/toolchain version differs from what
+    # generated the committed files), and a release should never mutate
+    # the tree it's building from. `go mod download` only populates the
+    # local module cache and cannot change any tracked file.
+    - go mod download
+
+builds:
+  - id: circleci-editor
+    main: ./cmd/circleci-editor
+    binary: circleci-editor
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      # Linux-only, and both are deliberate rather than incidental: s390x is
+      # IBM Z and ppc64le is POWER, the two architectures CircleCI's own
+      # self-hosted runner supports beyond x86/Arm, so a team running the
+      # editor next to a runner on that hardware has a binary. Pure Go with
+      # CGO_ENABLED=0 cross-compiles to both, and `ignore` below drops the
+      # combinations that do not exist -- Go has no darwin/s390x or
+      # windows/ppc64le target, and GoReleaser would fail the build rather
+      # than skip them.
+      #
+      # Note s390x is big-endian, the only big-endian target here. Nothing in
+      # this binary does unsafe pointer arithmetic or reinterprets byte order,
+      # so it should be unremarkable -- but it is the first target where an
+      # endianness bug could appear, and CI does not run tests there, so a
+      # failure would surface as a user report rather than a red build. Worth
+      # knowing before trusting it in anger.
+      - ppc64le
+      - s390x
+    ignore:
+      - goos: darwin
+        goarch: ppc64le
+      - goos: darwin
+        goarch: s390x
+      - goos: windows
+        goarch: ppc64le
+      - goos: windows
+        goarch: s390x
+    # Keeps the build machine's absolute paths out of the binary, and makes
+    # the build reproducible from a given commit.
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: circleci-editor
+    ids:
+      - circleci-editor
+    name_template: >-
+      {{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    # Explicit rather than relying on GoReleaser's own default file list, so
+    # it's obvious at a glance what ships alongside the binary.
+    files:
+      - README.md
+      - LICENSE
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  prerelease: auto
+
+# No Homebrew tap (or other package-manager publisher) is configured yet:
+# github.com/CircleCI-Labs/homebrew-tap (or similar) does not exist. Adding
+# a `brews:` section that points at a non-existent repo would make plain
+# `goreleaser release` fail outright (and would also break `--snapshot`,
+# since GoReleaser still validates publisher config even when skipping the
+# actual publish step). Once a tap repo exists, uncomment and adjust:
+#
+# brews:
+#   - name: circleci-editor
+#     ids:
+#       - circleci-editor
+#     repository:
+#       owner: CircleCI-Labs
+#       name: homebrew-tap
+#       branch: main
+#     directory: Formula
+#     homepage: "https://github.com/CircleCI-Labs/circleci-editor"
+#     description: "Visual, drag-and-drop editor for your .circleci/config.yml"
+#     license: "MIT"
+#     test: |
+#       system "#{bin}/circleci-editor --version"
+#     install: |
+#       bin.install "circleci-editor"
