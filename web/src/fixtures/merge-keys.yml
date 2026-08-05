@@ -1,0 +1,69 @@
+# Fixture for issue #35: YAML merge keys (`<<`) were invisible to every
+# reader in this tool, and a write to a field a job only had via `<<` used
+# to silently create a shadowing duplicate instead of touching the shared
+# anchor. Anchors are hung off `x-`-prefixed top-level keys -- a common
+# convention (CircleCI itself ignores unrecognized top-level keys, so this
+# is exactly how a real user would share config between jobs) for keeping
+# reusable data out of `jobs:`/`executors:` themselves.
+version: 2.1
+
+x-base: &base
+  docker:
+    - image: cimg/node:20.10
+  resource_class: large
+  working_directory: ~/project
+
+x-small: &small
+  resource_class: small
+  working_directory: ~/small-project
+
+executors:
+  # This executor's own fields are entirely merge-inherited from &base --
+  # exercises the `source: 'executor'` path of resolveJobExecutor picking up
+  # merge provenance from the *executors:* entry, not the job.
+  shared-executor:
+    <<: *base
+
+jobs:
+  # Inherits every field from &base through a single merge key.
+  build:
+    <<: *base
+    steps:
+      - checkout
+
+  # Merges &base but explicitly overrides resource_class -- the explicit
+  # key must win, and must remain the *only* literal field this job has of
+  # its own; docker/working_directory stay merge-inherited.
+  build_large:
+    <<: *base
+    resource_class: xlarge
+    steps:
+      - checkout
+
+  # Multi-anchor merge, &small listed first: per the YAML merge spec (and
+  # confirmed empirically against this exact `yaml` version, see
+  # documentUtils.test.ts), a key from an earlier source in the list wins
+  # over the same key from a later one, so resource_class/working_directory
+  # come from &small, while docker (which &small doesn't have) still comes
+  # through from &base. Deliberately block style, not `<<: [*small, *base]`
+  # -- `yaml`'s stringifier pads a *flow* sequence of aliases with spaces
+  # (`[ *small, *base ]`) on every re-serialize regardless of `merge`, which
+  # would fail this fixture's own byte-identical round-trip test for a
+  # reason that has nothing to do with issue #35.
+  build_multi:
+    <<:
+      - *small
+      - *base
+    steps:
+      - checkout
+
+  # A job whose executor is named, not inline -- the named executor's own
+  # fields are merge-inherited (see `shared-executor` above).
+  build_named_executor:
+    executor: shared-executor
+    steps:
+      - checkout
+
+  # A plain whole-value alias -- not a merge key at all, just another name
+  # for the exact same map &base points at.
+  build_alias: *base

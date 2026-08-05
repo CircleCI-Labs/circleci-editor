@@ -1,0 +1,63 @@
+version: 2.1
+description: >
+  A trimmed but faithful subset of the circleci/node orb, kept only for
+  parser test fixtures -- helpers for installing and caching Node.js
+  dependencies and running tests.
+display:
+  home_url: https://github.com/CircleCI-Public/node-orb
+  source_url: https://github.com/CircleCI-Public/node-orb
+
+executors:
+  default:
+    description: A Docker executor pre-configured for Node.js.
+    parameters:
+      tag:
+        type: string
+        default: "20.11"
+        description: The `cimg/node` Docker image tag to use.
+    docker:
+      - image: cimg/node:<< parameters.tag >>
+
+commands:
+  install-packages:
+    description: |
+      Install node packages using the detected (or specified) package
+      manager, with dependency caching so repeat installs are fast.
+    parameters:
+      pkg-manager:
+        type: enum
+        enum: [npm, yarn, yarn-berry, pnpm]
+        default: npm
+        description: The package manager to use.
+      cache-path:
+        type: string
+        default: ""
+        description: A custom cache path override; empty means auto-detect.
+      include-branch-in-cache-key:
+        type: boolean
+        default: false
+        description: Whether to include the current branch in the cache key.
+      app-dir:
+        type: string
+        default: "."
+        description: Path to the directory containing package.json.
+      override-ci-command:
+        type: string
+        description: A custom install command to run instead of the detected one.
+    steps:
+      - run:
+          name: Install packages
+          command: echo installing packages
+
+jobs:
+  test:
+    executor: default
+    parameters:
+      run-command:
+        type: string
+        default: "npm test"
+        description: The command to run for the test step.
+    steps:
+      - checkout
+      - install-packages
+      - run: << parameters.run-command >>

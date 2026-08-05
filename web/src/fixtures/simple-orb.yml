@@ -1,0 +1,27 @@
+# Smoke-test config for the docs site.
+version: 2.1
+
+orbs:
+  docs: circleci/gh-pages@0.4.0
+
+jobs:
+  publish:
+    docker:
+      - image: "cimg/base:2024.01" # double-quoted tag
+    steps:
+      - checkout
+      - run:
+          name: Render docs
+          command: |
+            make docs
+            make check-links
+      - docs/publish:
+          path: site/build
+
+workflows:
+  publish_docs:
+    jobs:
+      - publish:
+          filters:
+            branches:
+              only: main

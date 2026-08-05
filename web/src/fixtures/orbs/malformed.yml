@@ -1,0 +1,21 @@
+version: 2.1
+description: Deliberately malformed orb fixture for parser robustness tests.
+
+# Should be a mapping of job name -> definition; this orb author wrote a
+# sequence instead, which must degrade to an empty job list plus a problem
+# rather than throwing.
+jobs:
+  - build
+  - test
+
+commands:
+  greet:
+    description: A command with parameter edge cases.
+    parameters:
+      # No `type` given; must be inferred from the boolean default.
+      shout:
+        default: true
+      # Unrecognised `type`; must fall back to "string".
+      volume:
+        type: not-a-real-type
+        default: 11

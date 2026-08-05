@@ -1,0 +1,83 @@
+# This config builds, tests, and deploys the widgets service.
+# Owned by #platform-eng -- ping before making structural changes.
+version: 2.1
+
+orbs:
+  node: circleci/node@5.2.0
+
+executors:
+  node-medium:
+    docker:
+      - image: cimg/node:20.0 # pin to LTS
+    resource_class: medium
+    working_directory: ~/project
+
+commands:
+  install_deps:
+    description: "Install pinned dependencies" # quoted description
+    steps:
+      - restore_cache:
+          keys:
+            - deps-v1-{{ checksum "pnpm-lock.yaml" }}
+      - run: pnpm install --frozen-lockfile
+      - save_cache:
+          key: deps-v1-{{ checksum "pnpm-lock.yaml" }}
+          paths:
+            - node_modules
+
+jobs:
+  build:
+    executor: node-medium
+    steps:
+      - checkout
+      - install_deps
+      - run:
+          name: Build
+          command: |
+            echo "Building widgets"
+            pnpm run build
+            echo "Done"
+
+  test:
+    executor: node-medium
+    steps:
+      - checkout
+      - install_deps
+      - run: pnpm test -- --ci
+
+  # Deploy jobs
+  # These only run against main, never on forks.
+
+  deploy_staging:
+    executor: node-medium
+    steps:
+      - checkout
+      - run: ./deploy.sh staging
+
+  deploy_prod: &deploy_prod
+    executor: node-medium
+    steps:
+      - checkout
+      - run: ./deploy.sh production
+
+  deploy_prod_canary: *deploy_prod
+
+workflows:
+  build_test_deploy:
+    jobs:
+      - build
+      - test:
+          requires:
+            - build
+      - deploy_staging:
+          requires:
+            - test
+          filters:
+            branches:
+              only: main
+      - deploy_prod:
+          requires:
+            - deploy_staging
+          filters:
+            branches:
+              only: main

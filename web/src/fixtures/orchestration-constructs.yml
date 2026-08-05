@@ -1,0 +1,135 @@
+# Issue #220's fixture: the three orchestration constructs the owner flagged as
+# never deliberately tested -- serial groups, no-op jobs and "deploy" jobs --
+# plus the two workflow-entry keys that travel with them.
+#
+# Every construct here is copied from CircleCI's own vendored reference
+# (internal/guides/snapshot/.../configuration-reference.adoc and its
+# examples/orchestration-examples/*.yml), not invented, so a test that passes
+# against this file is a statement about real CircleCI config.
+#
+# The comments are load bearing in a second way: this file is a round-trip
+# fixture, so every one of them must survive a rename, a delete and a reorder
+# untouched.
+version: 2.1
+
+# Declared so `override-with:` below names an orb this config actually has.
+orbs:
+  my-orb: circleci/node@5.1.0
+
+# `job-groups` is a top-level key (reference: "job-groups"). A group is a named
+# set of job invocations with their own internal `requires:`, invoked in a
+# workflow exactly like a job. The only documented sub-key is `jobs`.
+job-groups:
+  # Two members, one internal dependency: release waits for deploy.
+  deploy-and-release:
+    jobs:
+      - deploy
+      - release-service:
+          requires:
+            - deploy
+
+  # A single-member group, which is the shape that most looks like a plain job
+  # and so is the one a graph is most likely to misreport.
+  smoke:
+    jobs:
+      - smoke-test
+
+jobs:
+  build:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: task build
+
+  test:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: task test
+
+  # A no-op job, CircleCI's own first-class construct for this: `type: no-op`
+  # "performs no actions and consumes no credits", and "only the type is
+  # required, no further job configuration". Note what is absent: no executor,
+  # no steps. Anything that assumes a job has a `steps:` list has to cope.
+  ok-to-deploy:
+    type: no-op
+
+  # The hand-rolled no-op this repository's own .circleci/config.yml used
+  # before `type: no-op` existed: a real executor running `echo`, which does
+  # consume credits. Kept beside the real thing on purpose -- both shapes exist
+  # in the wild and a fan-in gate has to render identically either way.
+  gate:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run:
+          name: All required checks passed
+          command: echo "all checks green"
+
+  # A job merely *named* deploy. This is the "deploy job" that is only a naming
+  # convention: nothing about the name means anything to CircleCI.
+  deploy:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      # `run`, not the deprecated `deploy` step: the reference marks `deploy` as
+      # DEPRECATED and the vendored JSON Schema has no `deploy` step at all.
+      - run: ccc deploy
+
+  # The construct that *is* specifically a deploy job in current CircleCI:
+  # `type: release`, which links the pipeline to a deployment in the deploys
+  # UI. `plan_name` is required for this type and for no other.
+  release-service:
+    type: release
+    plan_name: my-service-release
+
+  smoke-test:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: task smoke
+
+workflows:
+  main:
+    jobs:
+      - build
+      - test:
+          requires:
+            - build
+
+      # The fan-in gate: one no-op job requiring everything before it, which is
+      # the shape this repository's own config uses.
+      - ok-to-deploy:
+          requires:
+            - build
+            - test
+
+      # `serial-group` is a *string*, not a boolean and not a list: jobs sharing
+      # it run one after another across the whole organisation, not just within
+      # this workflow. It is therefore not a dependency, and it must not be
+      # mistaken for a job invocation parameter.
+      - deploy:
+          serial-group: << pipeline.project.slug >>/deploy-group
+          requires:
+            - ok-to-deploy
+
+      # A job group invoked in a workflow, with `requires:` naming a plain job.
+      # The group name is not a key under `jobs:` -- resolving it needs
+      # `job-groups`.
+      - deploy-and-release:
+          requires:
+            - deploy
+
+      # `serial-group` at the group invocation level, which the reference calls
+      # out as the way to serialise an entire group as an atomic unit.
+      - smoke:
+          serial-group: org-wide/smoke
+          requires:
+            - deploy-and-release
+
+      # `override-with` replaces a locally-defined job with an orb's job at the
+      # call site. Like serial-group it is an entry key, not a parameter.
+      - gate:
+          override-with: my-orb/my-gate
+          requires:
+            - smoke

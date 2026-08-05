@@ -1,0 +1,47 @@
+version: 2.1
+
+parameters:
+  run-integration-tests:
+    type: boolean
+    
+    default: false
+
+jobs:
+  lint-backend:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+
+  test-backend:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+
+  build-backend:
+    docker:
+      - image: cimg/python:3.11
+    steps:
+      - checkout
+
+workflows:
+  main:
+    jobs:
+      - lint-backend
+      - build-backend
+      # Unit tests (depend on linting) -- hand-authored with no extra
+      # indent on the status list, unlike this file's other sequences.
+      - test-backend:
+          requires:
+            - lint-backend:
+              - success
+              - failed
+      - build-backend:
+          requires:
+            - lint-backend:
+              - success
+              - failed
+
+
+

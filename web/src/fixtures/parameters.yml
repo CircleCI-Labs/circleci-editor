@@ -1,0 +1,72 @@
+# A config built around parameters, at both scopes (issue #250).
+# Owned by #platform-eng -- every construct here carries a comment on
+# purpose, so the round-trip tests have something to lose if a mutation
+# stops being surgical.
+version: 2.1
+
+parameters:
+  # Flipped from the API when we want the slow suite.
+  run-integration-tests:
+    type: boolean
+    default: false
+  deploy-env:
+    type: enum
+    enum:
+      - staging
+      - production # first value is what an un-supplied trigger gets
+    default: staging
+  image-tag:
+    type: string
+    default: "20.0"
+    description: Node image tag every job builds against
+
+jobs:
+  build:
+    parameters:
+      # The job's *own* scope: written << parameters.target >> below, and
+      # supplied by name at each workflow invocation.
+      target:
+        type: enum
+        enum:
+          - debug
+          - release
+        default: debug
+      verbose:
+        type: boolean
+        default: false
+    docker:
+      - image: cimg/node:<< pipeline.parameters.image-tag >> # pipeline scope
+    steps:
+      - checkout
+      - run:
+          name: Build << parameters.target >>
+          command: pnpm run build --mode << parameters.target >> # twice in one job
+      - when:
+          condition: << parameters.verbose >>
+          steps:
+            - run: pnpm run build --verbose
+
+  test:
+    docker:
+      - image: cimg/node:<< pipeline.parameters.image-tag >>
+    steps:
+      - checkout
+      - run: pnpm test
+
+workflows:
+  main:
+    jobs:
+      - build:
+          target: release # invocation site for the job's own parameter
+      - test:
+          requires:
+            - build
+          # A pipeline parameter can gate a whole entry.
+          filters:
+            branches:
+              only: main
+  integration:
+    when: << pipeline.parameters.run-integration-tests >>
+    jobs:
+      - build:
+          target: debug

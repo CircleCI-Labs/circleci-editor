@@ -1,0 +1,21 @@
+# Config that column-aligns its inline comments, a common house style.
+# This fixture exists to pin a known normalisation: see the round-trip test.
+version: 2.1
+
+executors:
+  go:
+    docker:
+      - image: cimg/go:1.26     # aligned inline comment
+    resource_class: large       # aligned inline comment
+
+jobs:
+  build:                        # aligned inline comment
+    executor: go
+    steps:
+      - checkout                # aligned inline comment
+      - run: go build ./...     # aligned inline comment
+
+workflows:
+  ci:
+    jobs:
+      - build

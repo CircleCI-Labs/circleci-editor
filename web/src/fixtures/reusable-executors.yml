@@ -1,0 +1,210 @@
+# Trimmed from a real user config that exposed issues #26 and #27 (see
+# /flakey-todo-list/.circleci/config.yml). Step bodies are shortened to
+# single lines -- this file exists to exercise graph/executor resolution,
+# not step contents -- but every shape that tripped up the tool is kept:
+# status-conditioned `requires:` (test-backend etc.), a multi-image
+# executor with a service container (python-db-executor), `machine`
+# executors with docker_layer_caching true/false, orb-provided steps/jobs,
+# and the deliberately-broken `slack` orb ref (missing namespace) that is
+# the user's bug, not ours -- it must not produce any graph problem here.
+version: 2.1
+
+orbs:
+  python: circleci/python@3.2.0
+  docker: circleci/docker@3.0.1
+  trivy: cci-labs/trivy@1.0.0
+  node: circleci/node@7.1.1
+  slack: slack@6.1.3
+
+executors:
+  python-lint-executor:
+    docker:
+      - image: cimg/python:3.11.13
+    working_directory: ~/project
+    resource_class: large
+
+  python-db-executor:
+    docker:
+      - image: cimg/python:3.11.13
+      - image: cimg/postgres:15.8
+        environment:
+          POSTGRES_DB: todoapp_test
+          POSTGRES_USER: todouser
+          POSTGRES_PASSWORD: todopass
+    working_directory: ~/project
+    environment:
+      DATABASE_URL: postgresql://todouser:todopass@localhost:5432/todoapp_test
+    resource_class: medium+
+
+  node-executor:
+    docker:
+      - image: cimg/node:20.18.1-browsers
+    working_directory: ~/project
+    resource_class: medium
+
+  docker-executor:
+    machine:
+      image: ubuntu-2404:current
+      docker_layer_caching: true
+    working_directory: ~/project
+    resource_class: large
+
+  docker-executor-no-dlc:
+    machine:
+      image: ubuntu-2404:current
+      docker_layer_caching: false
+    working_directory: ~/project
+    resource_class: large
+
+jobs:
+  lint-backend:
+    executor: python-lint-executor
+    steps:
+      - python/install-packages:
+          pkg-manager: pip
+          pip-dependency-file: requirements-dev.txt
+      - run:
+          name: Run flake8 linting
+          command: flake8 src tests
+
+  lint-frontend:
+    executor: node-executor
+    steps:
+      - checkout
+      - node/install-packages:
+          pkg-manager: npm
+      - run:
+          name: Run frontend linting
+          command: npm run lint
+
+  security-scan:
+    executor: python-lint-executor
+    steps:
+      - checkout
+      - trivy/scan:
+          scan-type: 'fs'
+          scan-ref: 'backend'
+      - run:
+          name: Run bandit security linting
+          command: bandit -r src/
+
+  build-backend:
+    executor: docker-executor
+    steps:
+      - checkout
+      - run:
+          name: Build backend Docker image
+          command: docker build -t backend .
+
+  build-frontend:
+    executor: docker-executor
+    steps:
+      - checkout
+      - run:
+          name: Build frontend Docker image
+          command: docker build -t frontend .
+
+  test-backend:
+    executor: python-lint-executor
+    steps:
+      - checkout
+      - run:
+          name: Run unit tests
+          command: pytest
+
+  test-frontend:
+    executor: node-executor
+    steps:
+      - checkout
+      - run:
+          name: Run frontend unit tests
+          command: echo placeholder
+
+  test-integration:
+    executor: python-db-executor
+    steps:
+      - checkout
+      - run:
+          name: Run integration tests
+          command: pytest tests/integration
+
+  test-docker-compose:
+    executor: docker-executor
+    steps:
+      - checkout
+      - run:
+          name: Test docker compose stack
+          command: docker-compose up -d
+
+  test-e2e:
+    executor: docker-executor-no-dlc
+    steps:
+      - checkout
+      - run:
+          name: Run E2E tests
+          command: npm test
+
+  test-performance:
+    executor: python-db-executor
+    steps:
+      - checkout
+      - run:
+          name: Run performance tests
+          command: python performance_test.py
+
+workflows:
+  main:
+    jobs:
+      - lint-backend
+      - lint-frontend
+      - security-scan
+      - build-backend
+      - build-frontend
+      - test-backend:
+          requires:
+            - lint-backend:
+                - success
+                - failed
+      - test-frontend:
+          requires:
+            - lint-frontend:
+                - success
+                - failed
+      - test-integration:
+          requires:
+            - test-backend:
+                - success
+                - failed
+            - build-backend:
+                - success
+                - failed
+      - test-docker-compose:
+          requires:
+            - build-backend:
+                - success
+                - failed
+            - build-frontend:
+                - success
+                - failed
+      - test-e2e:
+          requires:
+            - test-integration:
+                - success
+                - failed
+            - test-docker-compose:
+                - success
+                - failed
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+      - test-performance:
+          requires:
+            - test-e2e:
+                - success
+                - failed
+          filters:
+            branches:
+              only: main
+      - slack/on-hold

@@ -1,0 +1,45 @@
+version: 2.1
+description: >
+  A trimmed subset of the cci-labs/act orb, kept for parser test fixtures --
+  exercises a multi-line block-scalar description and a `default: true`
+  boolean parameter.
+display:
+  home_url: https://github.com/cci-labs/act-orb
+
+commands:
+  run:
+    description: |
+      Run a GitHub Actions workflow locally using `act`.
+
+      This command installs `act` if it is not already present on the
+      executor, then runs the given workflow file against the repository
+      already checked out at the current path.
+
+      See https://github.com/nektos/act for details on supported Actions
+      syntax and its limitations relative to real GitHub Actions runners.
+    parameters:
+      workflow-file:
+        type: string
+        default: ".github/workflows/ci.yml"
+        description: Path to the workflow file to run.
+      job:
+        type: string
+        default: ""
+        description: A specific job within the workflow to run; runs all jobs if empty.
+      pull:
+        type: boolean
+        default: true
+        description: Whether act should pull Docker images before running.
+      verbose:
+        type: boolean
+        default: false
+        description: Enable verbose act output.
+      act-version:
+        type: string
+        default: latest
+        description: Version of `act` to install.
+      platform:
+        type: enum
+        enum: [ubuntu-latest, ubuntu-20.04, ubuntu-18.04]
+        default: ubuntu-latest
+        description: Platform image mapping to pass to act via -P.

@@ -1,0 +1,205 @@
+# Issue #284's fixture.
+#
+# The report came from a real customer config that `circleci config validate`
+# accepts,
+# but that this app's DAG pane showed two false `error`-severity problems
+# for -- because `matrix:` workflow entries were never expanded into the
+# real jobs CircleCI runs, so `requires:` naming one of those jobs by its
+# real (expanded) name looked dangling. The proprietary config itself isn't
+# reproduced here; this fixture is built from the issue's own description to
+# exercise every trap it calls out, since "add the whole reported config as
+# a fixture" was explicitly the ask ("a better regression corpus than
+# anything hand-written"):
+#
+#  - the reported case itself: a non-matrix entry's `requires:` naming a
+#    matrix's expanded instances directly (`deploy-frontend`'s
+#    `Staging complete (frontend)`);
+#  - the reverse: a matrix entry's own `requires:` naming a non-matrix entry
+#    (`Deploy frontend to << matrix.region >>` requires `build-frontend`);
+#  - a YAML anchor on a matrix parameter's value list, reused via alias
+#    across two other matrix entries in *different* workflows (`&region_list`
+#    / `*region_list`) -- alias handling has bitten this repo before (issue
+#    #41, a `deleteJob` alias crash), so expansion has to follow it rather
+#    than choke on an unresolved node;
+#  - a matrix job whose own `requires:` names another matrix's expanded
+#    instances via `<< matrix.* >>` templating on both sides
+#    (`cron-jobs`'s `E2E tests cron-jobs (<< matrix.region >>)` requires
+#    `Notify downstream cron-jobs (<< matrix.region >>)`, substituted
+#    per-instance);
+#  - the cross product of *multiple* matrix parameters, with `exclude:`
+#    honoured, using CircleCI's own default-naming example verbatim
+#    (`nightly`'s `smoke-test`, from
+#    internal/guides/snapshot/docs/reference/modules/ROOT/pages/
+#    configuration-reference.adoc's `[#matrix]` example) so the expanded
+#    names are independently checkable against the vendored docs;
+#  - a fifth, ordinary workflow (`release`) with no matrix at all, so this
+#    fixture also stands as a "matrix expansion changes nothing it isn't
+#    supposed to" regression check.
+version: 2.1
+
+jobs:
+  build-frontend:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "build frontend"
+
+  deploy-service:
+    parameters:
+      region:
+        type: string
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "deploy << parameters.region >>"
+
+  staging-complete:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "staging complete"
+
+  deploy-service-backend:
+    parameters:
+      region:
+        type: string
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "deploy backend << parameters.region >>"
+
+  backend-smoke-test:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "backend smoke test"
+
+  notify-downstream:
+    parameters:
+      region:
+        type: string
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "notify << parameters.region >>"
+
+  e2e-tests:
+    parameters:
+      region:
+        type: string
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "e2e << parameters.region >>"
+
+  smoke-test:
+    parameters:
+      version:
+        type: string
+      platform:
+        type: string
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "smoke << parameters.version >> << parameters.platform >>"
+
+  lint:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "lint"
+
+  package-release:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "package"
+
+  publish-release:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - run: echo "publish"
+
+workflows:
+  deploy-frontend:
+    jobs:
+      - build-frontend
+      # The reported case's matrix, with the reported case's own explicit
+      # `name:` template -- and, for "the reverse", its own `requires:`
+      # naming a plain, non-matrix entry.
+      - deploy-service:
+          name: Deploy frontend to << matrix.region >>
+          requires:
+            - build-frontend
+          matrix:
+            parameters:
+              region: &region_list [NA, EU]
+      # The reported case itself: a non-matrix entry requiring the matrix's
+      # two expanded instances by their real (post-expansion) names.
+      - staging-complete:
+          name: Staging complete (frontend)
+          requires:
+            - Deploy frontend to NA
+            - Deploy frontend to EU
+
+  deploy-backend:
+    jobs:
+      # Same anchor, reused via alias, in a different workflow -- YAML
+      # anchors are document-scoped, so this is the same value list as
+      # `deploy-frontend`'s `region: &region_list [NA, EU]` above.
+      - deploy-service-backend:
+          name: Deploy backend to << matrix.region >>
+          matrix:
+            parameters:
+              region: *region_list
+      - backend-smoke-test:
+          requires:
+            - Deploy backend to NA
+            - Deploy backend to EU
+
+  cron-jobs:
+    jobs:
+      # A matrix job whose own `requires:` names another matrix's expanded
+      # instances, both sides templated on the same parameter.
+      - notify-downstream:
+          name: Notify downstream cron-jobs (<< matrix.region >>)
+          matrix:
+            parameters:
+              region: *region_list
+      - e2e-tests:
+          name: E2E tests cron-jobs (<< matrix.region >>)
+          matrix:
+            parameters:
+              region: *region_list
+          requires:
+            - Notify downstream cron-jobs (<< matrix.region >>)
+
+  nightly:
+    jobs:
+      # Verbatim from configuration-reference.adoc's `[#matrix]` example
+      # (just this job's own name swapped in for `build`), so the expanded
+      # default names below are checkable against the vendored docs, not
+      # this fixture's own say-so. `exclude:` drops one of the 9 combinations.
+      - smoke-test:
+          matrix:
+            parameters:
+              version: ["0.1", "0.2", "0.3"]
+              platform: ["macos", "windows", "linux"]
+            exclude:
+              - platform: linux
+                version: "0.3"
+
+  release:
+    jobs:
+      - lint
+      - package-release:
+          requires:
+            - lint
+      - hold-for-release:
+          type: approval
+          requires:
+            - package-release
+      - publish-release:
+          requires:
+            - hold-for-release
