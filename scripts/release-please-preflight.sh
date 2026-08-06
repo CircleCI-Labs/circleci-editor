@@ -49,6 +49,7 @@ fi
 read -r -d '' query <<'GRAPHQL' || true
 query probe($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
+    viewerPermission
     ref(qualifiedName: "main") {
       target {
         ... on Commit {
@@ -119,6 +120,27 @@ problem="$(node -e '
     process.stdout.write("associated pull requests were not readable");
     process.exit(0);
   }
+  // The read probes above prove authentication, and nothing else, whenever this
+  // repository is public: GitHub serves public repository data to any valid
+  // token, including one whose fine-grained repository list does not contain
+  // this repository at all. That is not hypothetical -- it is how the v1.0.0
+  // release job printed "Preflight OK" and then failed on the very next step
+  // with "Resource not accessible by personal access token" creating a ref.
+  // So ask GitHub what this token may actually do here.
+  const permission = parsed.data?.repository?.viewerPermission;
+  if (!permission) {
+    process.stdout.write(
+      "the permission this token holds on this repository could not be determined",
+    );
+    process.exit(0);
+  }
+  if (!["WRITE", "MAINTAIN", "ADMIN"].includes(permission)) {
+    process.stdout.write(
+      `the token has ${permission} access, but release-please must write ` +
+        "(it creates a branch, a tag and a release)",
+    );
+    process.exit(0);
+  }
   process.stdout.write("");
 ' <<<"${response}")"
 
@@ -150,14 +172,19 @@ What this means
 ---------------
 release-please builds a release PR by walking main's commits and reading the
 pull request each one came from -- it needs the PR titles to work out the next
-version and the PR bodies to write the changelog. Reading commit history works
-with this token (that part of the probe succeeded, and this token has
-successfully published releases up to v0.6.0), so the gap is narrower than
-"the token is wrong":
+version and the PR bodies to write the changelog. It then creates a branch, a
+tag and a release, all of which are writes.
 
-  Contents: read & write        -- already working, no change needed
-  Pull requests: read & write   -- MISSING. This is what failed.
-  Issues: read & write          -- needed next, not yet reached by this probe.
+Every one of these is required. This list deliberately no longer claims that
+any of them is "already working": an earlier version asserted that Contents
+write was fine because the read probe had succeeded, and on a *public*
+repository that read succeeds for a token with no access to the repository at
+all -- so the reassurance was unfounded exactly when it mattered.
+
+  Contents: read & write        -- creates the release branch, tag and release
+  Pull requests: read & write   -- opens and updates the release PR
+  Issues: read & write          -- for fine-grained tokens, labels are governed
+                                   by the Issues permission, not Pull requests.
                                    release-please labels the release PR
                                    "autorelease: pending", and for
                                    fine-grained tokens labels are governed by
@@ -169,7 +196,10 @@ How to fix it
 -------------
 Edit the token behind the devex-release context's GITHUB_TOKEN at
   ${TOKEN_SETTINGS_URL}
-and grant, for ${REPO}: Pull requests read & write, and Issues read & write.
+and check two separate things for ${REPO}: that the repository appears in the
+token's *repository access* list at all (a fine-grained token silently reads
+public repositories it was never granted), and that it has Contents read &
+write, Pull requests read & write, and Issues read & write.
 Nothing in this repository needs to change -- do not edit the config to work
 around this.
 
@@ -180,7 +210,8 @@ EOF
   exit 1
 fi
 
-echo "Preflight OK: GITHUB_TOKEN can read commit history and associated pull requests."
+echo "Preflight OK: GITHUB_TOKEN can read commit history and associated pull requests,"
+echo "and holds write access to ${REPO}."
 
 # Surface the expiry rather than waiting to be surprised by it: a token that
 # expires mid-quarter turns release automation off silently, and this is the one
