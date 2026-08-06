@@ -30,13 +30,43 @@ configuration. Five panes, each independently movable and collapsible:
   resolved, defaults applied).
 * **Workflow Graph** — a drag-and-drop, visual view of your jobs and
   workflows, kept in sync with the YAML.
-* **Palette** — draggable executors, steps, commands, parameters,
-  contexts, and project settings, plus a live orb registry search.
-* **Reference** — the CircleCI config schema and documentation, without
-  leaving the tool.
+* **Palette** — draggable executors, steps, commands, parameters and
+  contexts, plus a live orb registry search.
+* **Reference** — the CircleCI config schema and documentation without
+  leaving the tool, alongside this project's own settings, config policies
+  and caches.
 * **AI Assistant** — an optional, bring-your-own-key chat about the open
   config that can propose edits, always as a diff you approve before
   anything is written.
+
+## What leaves your machine
+
+The editor is a local tool. The host binds `127.0.0.1` only, your config is read
+from and written to your own working copy, and nothing is deployed. There is no
+telemetry and no analytics: this project never receives anything about your
+config, your repository, or your usage.
+
+It does make outbound requests, each for a feature you invoke:
+
+| Host | For | Credential |
+|---|---|---|
+| `circleci.com`, `app.circleci.com` | Validating and compiling your config, checking config policies, project and context lookups, the machine-image catalogue, the orb registry, and the usage data behind right-sizing suggestions | Your `CIRCLE_TOKEN` — except orb search and the image catalogue, which need none |
+| `hub.docker.com` | Listing available tags for a Docker image | None |
+| `api.github.com` | Checking whether the bundled CircleCI documentation snapshot is out of date | None |
+| `api.anthropic.com` | The AI pane, and only when you press Send | The AI key you configured |
+| `circleci.mcp.kapa.ai` | CircleCI's documentation MCP server, if you enable it in the AI pane | Its own token, if required |
+
+Validation deliberately sends your config to CircleCI's own compiler rather than
+approximating it locally — that is what makes the result authoritative rather
+than a second opinion.
+
+**The AI pane is the one place your file contents go to a third party.** It is
+off until you configure a key, it sends nothing until you press Send, and what
+it sends is the open config's text and path, the other files in `.circleci/`,
+your job and workflow names, and the current validation result. Nothing else in
+the repository is read for it. CircleCI is not in that path and neither are we.
+The Reference pane in the app carries the disclosure in full, under *What the AI
+pane sends, and to whom*.
 
 ## Screenshots
 
