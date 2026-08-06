@@ -104,6 +104,20 @@ func (f *fakeDownloader) Download(_ context.Context, url string) (io.ReadCloser,
 
 const testHeader = `"PROJECT_ID","PROJECT_NAME","JOB_NAME","JOB_RUN_DATE","RESOURCE_CLASS","OPERATING_SYSTEM","EXECUTOR","JOB_RUN_SECONDS","MEDIAN_CPU_UTILIZATION_PCT","MAX_CPU_UTILIZATION_PCT","MEDIAN_RAM_UTILIZATION_PCT","MAX_RAM_UTILIZATION_PCT","COMPUTE_CREDITS","TOTAL_CREDITS"` + "\n"
 
+// dayWithinWindow returns a JOB_RUN_DATE n days before today, UTC, so a test
+// row lands inside the cache's live window rather than on a fixed calendar
+// date.
+//
+// These were date literals. Against a window measured from time.Now() that is
+// a time bomb: "2026-07-29" sat inside a 7-day window the day it was written
+// and fell outside it eight days later, so the suite passed for a week and
+// then began failing on every platform at once. It surfaced first on one
+// runner, which made it look like a flake on that platform -- it was not, and
+// three sibling tests here were a day away from going the same way.
+func dayWithinWindow(n int) string {
+	return time.Now().UTC().AddDate(0, 0, -n).Format("2006-01-02")
+}
+
 func testCSVRow(day string) string {
 	return `"proj-1","my-project","build","` + day + `","large","linux","docker","120","20","30","40","50","0.2","0.2"` + "\n"
 }
@@ -124,7 +138,7 @@ func waitWarm(t *testing.T, done <-chan struct{}) {
 func TestCache_ColdStart_FetchesWholeWindow(t *testing.T) {
 	client := &fakeExportClient{orgID: "org-uuid", downloadURLs: []string{"https://example.com/a.csv.gz"}}
 	downloader := &fakeDownloader{files: map[string]string{
-		"https://example.com/a.csv.gz": testHeader + testCSVRow("2026-07-30"),
+		"https://example.com/a.csv.gz": testHeader + testCSVRow(dayWithinWindow(1)),
 	}}
 
 	c := usage.New(client, downloader, "gh/acme", "", "circleci.com", 7, nil)
@@ -214,8 +228,8 @@ func TestCache_MultipleDownloadURLs_AllAreFetched(t *testing.T) {
 		"https://example.com/b.csv.gz",
 	}}
 	downloader := &fakeDownloader{files: map[string]string{
-		"https://example.com/a.csv.gz": testHeader + testCSVRow("2026-07-29"),
-		"https://example.com/b.csv.gz": testHeader + testCSVRow("2026-07-30"),
+		"https://example.com/a.csv.gz": testHeader + testCSVRow(dayWithinWindow(2)),
+		"https://example.com/b.csv.gz": testHeader + testCSVRow(dayWithinWindow(1)),
 	}}
 
 	c := usage.New(client, downloader, "gh/acme", "", "circleci.com", 7, nil)
@@ -270,7 +284,7 @@ func TestCache_DiskPersistence_SurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	client := &fakeExportClient{orgID: "org-uuid", downloadURLs: []string{"https://example.com/a.csv.gz"}}
 	downloader := &fakeDownloader{files: map[string]string{
-		"https://example.com/a.csv.gz": testHeader + testCSVRow("2026-07-30"),
+		"https://example.com/a.csv.gz": testHeader + testCSVRow(dayWithinWindow(1)),
 	}}
 
 	c1 := usage.New(client, downloader, "gh/acme", dir, "circleci.com", 7, nil)
