@@ -65,6 +65,28 @@ export default defineConfig({
     timeout: 5_000,
   },
   fullyParallel: true,
+  /**
+   * Pinned to 2, not left at Playwright's default (which is CPU-count based
+   * and lands on 3 or more on most machines here).
+   *
+   * At 3 workers the `vite preview` server below has been observed to
+   * disappear partway through a run. Every spec that had not yet loaded the
+   * page then failed with `ERR_CONNECTION_REFUSED` -- in the observed run, 6
+   * specs across two unrelated files while 38 passed. That is the expensive
+   * kind of flake: the specs that "fail" have nothing to do with the cause,
+   * so it reads as a real regression in whatever area happened to be next in
+   * the queue.
+   *
+   * At 2 workers the whole suite passes consistently and repeatedly, and the
+   * specs that failed in a bad run pass on their own at any worker count --
+   * so this is the preview server under concurrent load, not the specs.
+   *
+   * This is a workaround, not the fix: the server should be able to serve
+   * three clients, and why it does not is worth finding out. Raising this for
+   * speed without answering that question re-enters the same failure, which
+   * is why the number is written down here rather than left implicit.
+   */
+  workers: 2,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI
