@@ -610,3 +610,150 @@ workflows:
 
   expect(pageErrors).toEqual([]);
 });
+
+/**
+ * Issue #24: a `job-groups` invocation already resolves correctly (its
+ * member list and a hover tooltip naming them), but drew no interior. This
+ * is the option the PR argues for -- "shown on selection" -- through a real
+ * browser and a real ELK layout pass, not the mocked one `DagPane.test.tsx`
+ * uses: the group renders as one collapsed node until it is selected, at
+ * which point its members appear as real, separately laid-out nodes inside
+ * it, and disappear again the moment selection moves elsewhere.
+ */
+const CONFIG_WITH_JOB_GROUP = `version: 2.1
+
+job-groups:
+  deploy-group:
+    jobs:
+      - deploy
+      - release:
+          requires:
+            - deploy
+  mystery-group:
+    jobs: not-a-list
+
+jobs:
+  build:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+  deploy:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+  release:
+    docker:
+      - image: cimg/base:current
+    steps:
+      - checkout
+
+workflows:
+  main:
+    jobs:
+      - build
+      - deploy-group:
+          requires:
+            - build
+      - mystery-group:
+          requires:
+            - build
+`;
+
+test('a resolvable job group draws its members, with a real ELK-laid-out interior, only once selected', async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+
+  await mockHostApi(page, { config: CONFIG_WITH_JOB_GROUP });
+  await page.goto('/');
+
+  const groupWrapper = page.locator('[data-testid="rf__node-deploy-group"]');
+  const groupNode = groupWrapper.locator('.vce-dag-node');
+  await expect(groupNode).toBeVisible();
+  await expect(groupNode.locator('.vce-dag-kind-label')).toHaveText('Group ▸');
+  // No members drawn yet -- one collapsed node is the truthful shape until
+  // someone asks to see inside it.
+  await expect(
+    page.locator('[data-testid="rf__node-deploy-group::deploy"]'),
+  ).toHaveCount(0);
+
+  await groupNode.click();
+
+  // The members are now real, separately positioned nodes -- not text in a
+  // tooltip -- each laid out by the same ELK pass as everything else.
+  const memberDeploy = page.locator(
+    '[data-testid="rf__node-deploy-group::deploy"]',
+  );
+  const memberRelease = page.locator(
+    '[data-testid="rf__node-deploy-group::release"]',
+  );
+  await expect(memberDeploy).toBeVisible();
+  await expect(memberRelease).toBeVisible();
+
+  // The group itself now renders as the boundary frame, not a job card.
+  await expect(groupWrapper.locator('.vce-dag-group-container')).toHaveCount(
+    1,
+  );
+
+  // Real, non-degenerate geometry: the internal `release` -> `deploy`
+  // ordering is respected, and both sit inside the group's own bounding box
+  // -- the assertions that would fail if ELK's compound-node handling threw
+  // or mis-nested the children.
+  const groupBox = await groupWrapper.boundingBox();
+  const deployBox = await memberDeploy.boundingBox();
+  const releaseBox = await memberRelease.boundingBox();
+  expect(groupBox).not.toBeNull();
+  expect(deployBox).not.toBeNull();
+  expect(releaseBox).not.toBeNull();
+  expect(deployBox!.x).toBeLessThan(releaseBox!.x);
+  expect(deployBox!.x).toBeGreaterThanOrEqual(groupBox!.x);
+  expect(releaseBox!.x + releaseBox!.width).toBeLessThanOrEqual(
+    groupBox!.x + groupBox!.width + 1, // +1: sub-pixel rounding
+  );
+
+  // Deselecting collapses it back to one node -- selection is the only
+  // thing driving expansion.
+  await page.locator('.react-flow__pane').click({ position: { x: 20, y: 20 } });
+  await expect(memberDeploy).toHaveCount(0);
+  await expect(memberRelease).toHaveCount(0);
+
+  expect(pageErrors).toEqual([]);
+});
+
+/**
+ * The other half of issue #24's truthfulness rule: a group whose `jobs:`
+ * this app cannot read as a list at all must never look like -- or behave
+ * like -- a group that simply hasn't been expanded yet. It gets a distinct
+ * warning-toned badge, and selecting it draws nothing, rather than silently
+ * "expanding" into an empty box indistinguishable from a real, empty group.
+ */
+test('a job group whose membership cannot be resolved renders as unresolved, not as an emptily-expandable group', async ({
+  page,
+}) => {
+  await mockHostApi(page, { config: CONFIG_WITH_JOB_GROUP });
+  await page.goto('/');
+
+  const mysteryWrapper = page.locator(
+    '[data-testid="rf__node-mystery-group"]',
+  );
+  const mysteryNode = mysteryWrapper.locator('.vce-dag-node');
+  await expect(mysteryNode).toBeVisible();
+  await expect(
+    mysteryWrapper.locator('.vce-dag-node--group-unresolved'),
+  ).toHaveCount(1);
+  await expect(
+    mysteryNode.getByText('Group: unresolved', { exact: false }),
+  ).toBeVisible();
+
+  await mysteryNode.click();
+
+  // Still one collapsed node -- clicking an unresolvable group is a no-op
+  // for expansion, never a container with nothing inside it.
+  await expect(mysteryWrapper.locator('.vce-dag-group-container')).toHaveCount(
+    0,
+  );
+  await expect(mysteryNode).toBeVisible();
+});

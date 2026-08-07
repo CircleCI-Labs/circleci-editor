@@ -132,6 +132,123 @@ describe('layoutGraph', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #24: a selected group's interior is laid out as ELK's own compound
+// node, not a second, disconnected layout pass -- these pin that the
+// surrounding graph still lays out and that the interior's positions come
+// back usable (finite, relative to the group), without asserting exact
+// pixel values that would just be pinning ELK's own algorithm.
+// ---------------------------------------------------------------------------
+
+describe('layoutGraph with expandedGroupId (#24)', () => {
+  function makeGroupNode(
+    overrides: Partial<GraphNode> & { id: string },
+  ): GraphNode {
+    return makeNode({
+      kind: 'group',
+      groupMembers: ['a', 'b'],
+      groupSubgraph: {
+        nodes: [
+          makeNode({ id: `${overrides.id}::a` }),
+          makeNode({ id: `${overrides.id}::b` }),
+        ],
+        edges: [
+          {
+            id: `${overrides.id}::a->${overrides.id}::b`,
+            source: `${overrides.id}::a`,
+            target: `${overrides.id}::b`,
+            internal: true,
+          },
+        ],
+        problems: [],
+      },
+      ...overrides,
+    });
+  }
+
+  it('lays out an expanded group as a compound node, with members positioned relative to it', async () => {
+    const group = makeGroupNode({ id: 'deploy-group' });
+    const graph = makeGraph(
+      [makeNode({ id: 'build' }), group],
+      [{ id: 'build->deploy-group', source: 'build', target: 'deploy-group' }],
+    );
+
+    const result = await layoutGraph(graph, {
+      expandedGroupId: 'deploy-group',
+    });
+
+    const groupPos = result.nodes.find((n) => n.id === 'deploy-group');
+    const memberA = result.nodes.find((n) => n.id === 'deploy-group::a');
+    const memberB = result.nodes.find((n) => n.id === 'deploy-group::b');
+    expect(groupPos).toBeDefined();
+    expect(memberA).toBeDefined();
+    expect(memberB).toBeDefined();
+
+    // Sized to fit its own children, not the ordinary fixed leaf size --
+    // the whole point of the compound treatment.
+    expect(groupPos && groupPos.width).toBeGreaterThan(NODE_WIDTH_FOR_TEST);
+    // Every position is finite and, per ELK's own convention for a
+    // hierarchical node, small (member coordinates are relative to the
+    // group's own origin, not the root's) -- both members land well inside
+    // the group's own bounding box, not out at the root graph's scale.
+    for (const node of [groupPos, memberA, memberB]) {
+      expect(Number.isFinite(node?.x)).toBe(true);
+      expect(Number.isFinite(node?.y)).toBe(true);
+    }
+    expect(memberA && groupPos && memberA.x < groupPos.width).toBe(true);
+
+    // The internal edge is appended to the graph's own edges -- one flat
+    // list, no separate rendering path for "an edge inside a group".
+    expect(
+      result.edges.some(
+        (e) =>
+          e.source === 'deploy-group::a' &&
+          e.target === 'deploy-group::b' &&
+          e.internal === true,
+      ),
+    ).toBe(true);
+    // The external edge (build -> the group as a unit) is untouched.
+    expect(
+      result.edges.some(
+        (e) => e.source === 'build' && e.target === 'deploy-group',
+      ),
+    ).toBe(true);
+  });
+
+  it('falls back to the ordinary leaf when expandedGroupId names an unresolvable group', async () => {
+    const unresolvable = makeNode({
+      id: 'mystery',
+      kind: 'group',
+      groupMembers: undefined,
+      groupSubgraph: undefined,
+    });
+    const graph = makeGraph([unresolvable]);
+
+    const result = await layoutGraph(graph, { expandedGroupId: 'mystery' });
+
+    expect(result.nodes).toHaveLength(1);
+    expect(result.nodes[0]?.width).toBe(NODE_WIDTH_FOR_TEST);
+    // No interior to draw, so the edges array is untouched -- same
+    // reference as the input, exactly like the collapsed path.
+    expect(result.edges).toBe(graph.edges);
+  });
+
+  it('leaves the collapsed (no expandedGroupId) path producing the identical edges reference', async () => {
+    const group = makeGroupNode({ id: 'deploy-group' });
+    const graph = makeGraph([group]);
+
+    const result = await layoutGraph(graph);
+
+    expect(result.nodes[0]?.width).toBe(NODE_WIDTH_FOR_TEST);
+    expect(result.edges).toBe(graph.edges);
+  });
+});
+
+/** Mirrors `layout.ts`'s own private `NODE_WIDTH` -- kept as a literal here
+ * rather than exported from that module purely for a test to import, since
+ * nothing else needs it public. */
+const NODE_WIDTH_FOR_TEST = 256;
+
+// ---------------------------------------------------------------------------
 // Issue #12: a dangling `requires:` is now a real edge into a synthesised
 // `missing` placeholder node (see `buildGraph`). ELK must handle that like
 // any other node -- an edge whose endpoint it has never been told about is

@@ -133,17 +133,58 @@ export interface GraphNode {
   orbRef?: string;
   /**
    * Set only when `kind === 'group'`: the job names this `job-groups` entry
-   * invokes, in document order (issue #220).
+   * invokes, in document order (issue #220). `undefined` when this app could
+   * not read a membership list at all -- see `getJobGroupMembers`'s own doc
+   * comment on why that must never collapse into `[]`; issue #24's "Group"
+   * badge and `groupSubgraph` below both key off this distinction.
    *
    * Present so a consumer can say *what* the group contains without re-reading
    * the document, and so the node can be labelled as a group rather than
-   * passing for an ordinary job. It is deliberately **not** expanded into
-   * separate graph nodes: the group is invoked as one unit and its `requires:`
-   * applies to the unit, so one node per invocation is the truthful rendering
-   * of what the workflow says. The members' own internal ordering lives in
-   * their own `requires:` inside the group definition.
+   * passing for an ordinary job. This field alone is deliberately **not**
+   * expanded into separate top-level graph nodes: the group is invoked as one
+   * unit and its `requires:` applies to the unit, so one node per invocation
+   * remains the truthful shape of *this* array. `groupSubgraph` is where the
+   * members themselves live, for a caller that wants to draw them.
    */
   groupMembers?: string[];
+  /**
+   * Set only when `kind === 'group'` and `groupMembers` resolved: the
+   * group's own interior, built by the identical machinery this file uses
+   * for a workflow -- each member resolved to job/orb/approval/group, its
+   * `requires:` turned into edges, a dangling reference synthesised as a
+   * `missing` hole, cycles detected -- because the reference documents a
+   * group's `jobs:` as following "the same format as workflow job entries"
+   * and it deserves the same treatment, not a stripped-down one (issue #24).
+   *
+   * `undefined` whenever `groupMembers` is (nothing to draw), which is a
+   * strictly *stronger* condition than the reverse: a member that itself
+   * names another job-groups entry resolves to its own `kind: 'group'` node
+   * here with `groupMembers` set, but no `groupSubgraph` of its own -- this
+   * app draws a group's interior exactly one level deep, so a member that is
+   * itself a group renders collapsed rather than recursing indefinitely (and
+   * a group cannot be forced into naming itself as its own member to defeat
+   * that bound, since the same one-level cutoff applies before any cycle
+   * could form).
+   *
+   * Every node/edge id in here is prefixed `${this node's id}::` (see
+   * `GraphNode.parentId`/`GraphEdge.internal`) so it can never collide with a
+   * sibling workflow-level id, or with another group's own members, once a
+   * caller flattens this alongside the top-level arrays for rendering.
+   */
+  groupSubgraph?: {
+    nodes: GraphNode[];
+    edges: GraphEdge[];
+    problems: GraphProblem[];
+  };
+  /**
+   * Set only on a node that lives inside another node's `groupSubgraph`: that
+   * group's own `id`. `undefined` for every ordinary workflow-level node.
+   * This is what lets a renderer parent a member visually under its group
+   * (React Flow's own `parentId` node relationship expects exactly this),
+   * and what `findGraphNode` walks to resolve a member id back to the group
+   * that contains it.
+   */
+  parentId?: string;
   /**
    * This entry's `serial-group:` string, if any -- lifted from
    * `entryOptions.serialGroup` onto the node so the DAG can mark a job that
@@ -210,6 +251,17 @@ export interface GraphEdge {
    * broken. See `WorkflowGraph.nodes`.
    */
   dangling?: boolean;
+  /**
+   * True for an edge inside a group's own `groupSubgraph` -- a member's
+   * `requires:` naming a sibling member, never a workflow-level dependency
+   * (issue #24). A renderer must withhold the unlink affordance a workflow-
+   * level edge gets: removing one would mean mutating
+   * `job-groups.<name>.jobs[i].requires`, and this app has no mutation for
+   * that yet. Offering a control that silently does nothing (or worse, edits
+   * the wrong path) is exactly the dishonest-UI failure this project refuses
+   * to ship, so the flag exists to let a renderer refuse instead.
+   */
+  internal?: boolean;
 }
 
 export interface GraphProblem {
@@ -390,13 +442,14 @@ function readOptionalString(options: YAMLMap, key: string): string | undefined {
 }
 
 /**
- * Reads one workflow's `jobs:` sequence into a flat list of raw entries,
+ * Reads a `jobs:` sequence -- a workflow's own, or a `job-groups` entry's,
+ * both documented as the same shape -- into a flat list of raw entries,
  * handling both shapes a job entry can take: a bare string (`- build`) or a
  * single-key map (`- build: { requires: [...], name: ..., type: ... }`).
  *
  * A `matrix:` entry is expanded here, into one `RawEntry` per parameter
  * combination (issue #284) -- every downstream consumer (the node builder
- * below, and `buildWorkflowGraph`'s `requires:`/dangling-check loop) then
+ * below, and `buildNodesAndEdges`'s `requires:`/dangling-check loop) then
  * sees exactly the jobs CircleCI itself would run, with no separate
  * expansion step of its own to keep in sync. `alias` and `requires` on each
  * expanded `RawEntry` already have this *instance's own* `<< matrix.* >>`
@@ -404,9 +457,13 @@ function readOptionalString(options: YAMLMap, key: string): string | undefined {
  * `requires:` naming another matrix's expanded instance (or its own
  * combination) resolves the same way CircleCI resolves it, not as a literal,
  * unresolved template string.
+ *
+ * Factored out from a workflow-specific lookup (issue #24) so a group's own
+ * `jobs:` -- resolved by its caller via a different path, `['job-groups',
+ * name, 'jobs']` rather than `['workflows', name, 'jobs']` -- gets the
+ * identical parsing rather than a second, drifting implementation.
  */
-function parseEntries(doc: Document, workflowName: string): RawEntry[] {
-  const seq = getNode(doc, ['workflows', workflowName, 'jobs']);
+function parseEntriesFromSeq(doc: Document, seq: unknown): RawEntry[] {
   if (!isSeq(seq)) return [];
 
   const entries: RawEntry[] = [];
@@ -503,6 +560,27 @@ function parseEntries(doc: Document, workflowName: string): RawEntry[] {
   return entries;
 }
 
+/** One workflow's own `jobs:` sequence, parsed via `parseEntriesFromSeq`. */
+function parseEntries(doc: Document, workflowName: string): RawEntry[] {
+  return parseEntriesFromSeq(
+    doc,
+    getNode(doc, ['workflows', workflowName, 'jobs']),
+  );
+}
+
+/**
+ * One `job-groups` entry's own `jobs:` sequence, parsed via
+ * `parseEntriesFromSeq` -- the same reader a workflow's own `jobs:` uses,
+ * because the reference documents a group's members as following identical
+ * syntax (issue #24).
+ */
+function parseGroupEntries(doc: Document, groupName: string): RawEntry[] {
+  return parseEntriesFromSeq(
+    doc,
+    getNode(doc, ['job-groups', groupName, 'jobs']),
+  );
+}
+
 /**
  * Decides which namespace a workflow entry's name resolves into.
  *
@@ -554,11 +632,16 @@ function missingNode(id: string): GraphNode {
 }
 
 /**
- * Builds the dependency graph for one workflow directly from the parsed
- * config document. Unknown `requires` targets, references to undefined
- * jobs, and dependency cycles are collected as `problems` rather than
- * thrown, so a broken config can still be rendered (with warnings) instead
- * of blanking out the DAG pane.
+ * Builds a dependency graph from an already-parsed list of entries -- a
+ * workflow's own `jobs:`, or (issue #24) one `job-groups` entry's `jobs:`,
+ * both documented as the same shape and so both deserving the identical
+ * treatment: kind resolution, dangling-`requires:` detection, and cycle
+ * detection, not a stripped-down version of it for whichever namespace
+ * showed up second.
+ *
+ * Unknown `requires` targets, references to undefined jobs, and dependency
+ * cycles are collected as `problems` rather than thrown, so a broken config
+ * can still be rendered (with warnings) instead of blanking out the DAG pane.
  *
  * A `requires:` naming an id no entry provides (issue #12: what renaming or
  * deleting a job used to leave behind, and what a hand-edited config can
@@ -570,18 +653,29 @@ function missingNode(id: string): GraphNode {
  * signal, not a replacement for it. ELK lays these out like any other node
  * (`layout.test.ts` pins that it doesn't throw), which is the whole reason
  * this is modelled as a node rather than as a half-drawn edge.
+ *
+ * `expandGroups` bounds how deep a group's own interior gets resolved.
+ * `buildWorkflowGraph` (below) calls this with `true` for a workflow's own
+ * entries, so each `group`-kind node it produces also gets a `groupSubgraph`
+ * -- but that recursive call, for the group's *own* members, passes `false`,
+ * so a member that itself names another job-groups entry resolves to a
+ * `group`-kind node (with its own `groupMembers`) but no further
+ * `groupSubgraph`. This isn't a shortcut taken for convenience: it is the
+ * only depth this app's canvas can actually draw (issue #24 expands one
+ * level, the selected group's direct members, never a member-of-a-member),
+ * and stopping the *data* at the same depth the *renderer* stops at means
+ * there is no `groupSubgraph` anywhere that claims to be drawable but isn't
+ * -- and, as a side effect, makes a group that names itself (directly or via
+ * a cycle of groups) structurally impossible to recurse into forever, with
+ * no separate cycle guard required.
  */
-export function buildWorkflowGraph(
+function buildNodesAndEdges(
   doc: Document,
-  workflowName: string,
-): WorkflowGraph {
-  const entries = parseEntries(doc, workflowName);
+  entries: RawEntry[],
+  definedGroups: Set<string>,
+  expandGroups: boolean,
+): { nodes: GraphNode[]; edges: GraphEdge[]; problems: GraphProblem[] } {
   const definedJobs = new Set(getJobNames(doc));
-  // The second namespace a workflow entry's name can resolve into (issue
-  // #220). Before this, a workflow invoking a job group was reported as
-  // referencing an undefined job -- a false error about valid config, and on
-  // the one surface this app's whole claim rests on.
-  const definedGroups = new Set(getJobGroupNames(doc));
 
   const nodes: GraphNode[] = entries.map((entry) => {
     const { kind, orbRef } = resolveKind(
@@ -593,14 +687,19 @@ export function buildWorkflowGraph(
     // `job` needs a `jobs:` key to be considered defined, and a `group` has
     // already been resolved against `job-groups` by resolveKind.
     const isDefined = kind === 'job' ? definedJobs.has(entry.jobName) : true;
+    const groupMembers =
+      kind === 'group' ? getJobGroupMembers(doc, entry.jobName) : undefined;
     return {
       id: entry.alias,
       jobName: entry.jobName,
       alias: entry.alias,
       kind,
       orbRef,
-      groupMembers:
-        kind === 'group' ? getJobGroupMembers(doc, entry.jobName) : undefined,
+      groupMembers,
+      // Filled in once every node exists (below): building a group's own
+      // interior needs `parseGroupEntries`/a recursive call, which is easier
+      // to reason about as a second pass than interleaved with this map.
+      groupSubgraph: undefined,
       serialGroup: entry.entryOptions.serialGroup,
       // Ids only -- the map form's statuses are metadata for the edge, not
       // part of what a node "requires" topologically (see `RequireRef`).
@@ -650,6 +749,55 @@ export function buildWorkflowGraph(
         nodeId: node.id,
         undefinedJob: node.jobName,
       });
+    }
+
+    // Issue #24: a group's own interior, resolved by the identical function
+    // one level down (`expandGroups: false`, so it goes no deeper than
+    // this) -- see this function's own doc comment on why the bound is here
+    // rather than a separate cycle guard. `groupMembers === undefined` means
+    // this app could not read a membership list at all (`getJobGroupMembers`'s
+    // own doc comment), and there is nothing to build an interior from.
+    if (
+      expandGroups &&
+      node.kind === 'group' &&
+      node.groupMembers !== undefined
+    ) {
+      const memberEntries = parseGroupEntries(doc, node.jobName);
+      const built = buildNodesAndEdges(
+        doc,
+        memberEntries,
+        definedGroups,
+        false,
+      );
+      const prefix = `${node.id}::`;
+      node.groupSubgraph = {
+        nodes: built.nodes.map((member) => ({
+          ...member,
+          id: `${prefix}${member.id}`,
+          parentId: node.id,
+        })),
+        edges: built.edges.map((memberEdge) => ({
+          ...memberEdge,
+          id: `${prefix}${memberEdge.id}`,
+          source: `${prefix}${memberEdge.source}`,
+          target: `${prefix}${memberEdge.target}`,
+          internal: true,
+        })),
+        problems: built.problems,
+      };
+      // Surfaced at the workflow's own level too, not only inside
+      // `groupSubgraph` -- a broken internal dependency is a real config
+      // problem whether or not anyone has expanded this group to look. The
+      // `nodeId` points at the *group's* own id (prefixed member ids are
+      // meaningless before a renderer decides to draw the interior), which
+      // is also what makes clicking the banner entry select something real.
+      for (const memberProblem of built.problems) {
+        problems.push({
+          ...memberProblem,
+          message: `In job group "${node.jobName}": ${memberProblem.message}`,
+          nodeId: node.id,
+        });
+      }
     }
 
     for (const req of entry.requires) {
@@ -721,6 +869,49 @@ export function buildWorkflowGraph(
   problems.push(...detectCycles(nodes, edges));
 
   return { nodes, edges, problems };
+}
+
+/**
+ * Builds the dependency graph for one workflow directly from the parsed
+ * config document -- see `buildNodesAndEdges` for what this actually does;
+ * this is now just that function fed the workflow's own entries, with
+ * `expandGroups: true` so every `group`-kind node it produces also gets a
+ * `groupSubgraph` (issue #24).
+ */
+export function buildWorkflowGraph(
+  doc: Document,
+  workflowName: string,
+): WorkflowGraph {
+  const entries = parseEntries(doc, workflowName);
+  // The second namespace a workflow entry's name can resolve into (issue
+  // #220). Before this, a workflow invoking a job group was reported as
+  // referencing an undefined job -- a false error about valid config, and on
+  // the one surface this app's whole claim rests on.
+  const definedGroups = new Set(getJobGroupNames(doc));
+  return buildNodesAndEdges(doc, entries, definedGroups, true);
+}
+
+/**
+ * Resolves `id` to its `GraphNode`, searching not just `graph.nodes` but one
+ * level into every group's own `groupSubgraph` (issue #24) -- because a
+ * group member's id only exists there, never in `graph.nodes` itself (see
+ * `WorkflowGraph.nodes`'s own contract: one node per *invocation*, and a
+ * group is invoked as a unit). `DagPane` uses this for every lookup that
+ * used to assume "selected id -> a top-level node" -- the inspector, the
+ * delete-confirm popover, diagnostic attribution -- so selecting an expanded
+ * group's member keeps working exactly like selecting anything else, rather
+ * than silently resolving to nothing because it lives one level down.
+ */
+export function findGraphNode(
+  graph: WorkflowGraph,
+  id: string,
+): GraphNode | undefined {
+  for (const node of graph.nodes) {
+    if (node.id === id) return node;
+    const member = node.groupSubgraph?.nodes.find((n) => n.id === id);
+    if (member) return member;
+  }
+  return undefined;
 }
 
 /**

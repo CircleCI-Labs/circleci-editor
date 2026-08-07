@@ -875,16 +875,32 @@ export function getJobGroupNames(doc: Document): string[] {
 
 /**
  * Lists the job names invoked inside job group `groupName`, in document
- * order, or `[]` when there is no such group.
+ * order.
  *
  * Reads the same two entry shapes a workflow's `jobs:` list accepts (a bare
  * string, or a single-key map carrying `requires:` and friends), because the
  * reference specifies a group's `jobs` as "following the same format as
  * workflow job entries".
+ *
+ * Returns `undefined`, not `[]`, when `jobs:` is missing or is not a
+ * sequence at all -- issue #24's truthfulness rule for the DAG's own "Group"
+ * badge. The vendored schema makes `jobs` required with `minItems: 1`, so a
+ * *valid* group can never legitimately have zero members: an empty result
+ * only ever means this app could not read a membership list from the
+ * document, not that the group declares none. `[]` is reserved for exactly
+ * that "declares none" case -- reachable today only via this app's own edit
+ * path (`deleteJobFromGroups` deliberately leaves `jobs: []` behind rather
+ * than deleting the group, so the empty list stays visible and fixable) --
+ * and must keep meaning that, or a group a user just emptied by deleting its
+ * last member would render identically to one whose `jobs:` this app simply
+ * couldn't parse.
  */
-export function getJobGroupMembers(doc: Document, groupName: string): string[] {
+export function getJobGroupMembers(
+  doc: Document,
+  groupName: string,
+): string[] | undefined {
   const seq = getNode(doc, ['job-groups', groupName, 'jobs']);
-  if (!isSeq(seq)) return [];
+  if (!isSeq(seq)) return undefined;
 
   const members: string[] = [];
   for (const item of seq.items) {

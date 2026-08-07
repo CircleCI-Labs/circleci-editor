@@ -193,26 +193,56 @@ async function getFitViewMock(): Promise<ReturnType<typeof vi.fn>> {
 // this test focused on DagPane's own logic (workflow selection, direction
 // toggle, problem banners, empty states) rather than ELK's actual geometry,
 // which `layout.test.ts` already covers.
+//
+// Issue #24: still has to honour `expandedGroupId` -- a bare `graph.nodes.map`
+// would never surface a group's members into the flat array `DagPane`'s
+// `flowNodes` reads, and every test exercising expansion would then be
+// testing nothing. This mirrors the real `layout.ts`'s own flattening (one
+// entry per member, `parentId` untouched from `buildGraph`'s own output,
+// internal edges appended) without ELK's actual geometry -- exactly the same
+// scope cut this mock already made for the ordinary, non-expanded case.
 vi.mock('~/lib/graph/layout', () => ({
   layoutGraph: vi.fn<
     (
       graph: WorkflowGraph,
-      options?: { direction?: 'RIGHT' | 'DOWN' },
+      options?: { direction?: 'RIGHT' | 'DOWN'; expandedGroupId?: string },
     ) => Promise<LayoutResult>
   >(
     async (
       graph: WorkflowGraph,
-      options: { direction?: 'RIGHT' | 'DOWN' } = {},
-    ): Promise<LayoutResult> => ({
-      nodes: graph.nodes.map((node, index) => ({
-        ...node,
-        x: options.direction === 'DOWN' ? 0 : index * 160,
-        y: options.direction === 'DOWN' ? index * 80 : 0,
-        width: 140,
-        height: 56,
-      })),
-      edges: graph.edges,
-    }),
+      options: { direction?: 'RIGHT' | 'DOWN'; expandedGroupId?: string } = {},
+    ): Promise<LayoutResult> => {
+      const nodes: PositionedNode[] = [];
+      let internalEdges: WorkflowGraph['edges'] = [];
+      graph.nodes.forEach((node, index) => {
+        nodes.push({
+          ...node,
+          x: options.direction === 'DOWN' ? 0 : index * 160,
+          y: options.direction === 'DOWN' ? index * 80 : 0,
+          width: 140,
+          height: 56,
+        });
+        if (node.id === options.expandedGroupId && node.groupSubgraph) {
+          node.groupSubgraph.nodes.forEach((member, memberIndex) => {
+            nodes.push({
+              ...member,
+              x: 10,
+              y: memberIndex * 60,
+              width: 120,
+              height: 40,
+            });
+          });
+          internalEdges = node.groupSubgraph.edges;
+        }
+      });
+      return {
+        nodes,
+        edges:
+          internalEdges.length > 0
+            ? [...graph.edges, ...internalEdges]
+            : graph.edges,
+      };
+    },
   ),
 }));
 
@@ -2310,6 +2340,176 @@ workflows:
       expect(
         screen.getByRole('separator', { name: /resize inspector/i }),
       ).toHaveAttribute('aria-valuenow', '400');
+    });
+  });
+
+  /*
+   * Issue #24: a job group resolves correctly and carries its member list
+   * today, but draws no interior -- these pin the "shown on selection"
+   * choice this issue's PR argues for: the interior stays undrawn until the
+   * group itself (or, once expanded, one of its members) is selected, and
+   * collapses the moment selection moves elsewhere. Real ELK geometry is
+   * `layout.test.ts`'s job; this exercises `DagPane`'s own wiring --
+   * `expandedGroupId` derivation, `flowNodes`/`flowEdges` construction, and
+   * `findGraphNode`-based selection -- via the flattening the mocked
+   * `layoutGraph` above reproduces.
+   */
+  describe('job groups (issue #24)', () => {
+    function setGroupWorkflow(): void {
+      setDocFromYaml(`
+job-groups:
+  deploy-group:
+    jobs:
+      - deploy
+      - release:
+          requires:
+            - deploy
+  mystery-group:
+    jobs: not-a-list
+jobs:
+  build:
+    docker: []
+  deploy:
+    docker: []
+  release:
+    docker: []
+workflows:
+  main:
+    jobs:
+      - build
+      - deploy-group:
+          requires:
+            - build
+      - mystery-group:
+          requires:
+            - build
+`);
+    }
+
+    it('draws no members until the group itself is selected', async () => {
+      useAppStore.setState(RESET_STATE);
+      setGroupWorkflow();
+      render(<DagPane />);
+      await settle();
+
+      const props = await getCapturedProps();
+      expect(props.nodes.map((n) => n.id)).toEqual([
+        'build',
+        'deploy-group',
+        'mystery-group',
+      ]);
+      expect(screen.queryByTestId('node-deploy-group::deploy')).toBeNull();
+    });
+
+    it('renders the resolvable group as its members the moment it is selected, and collapses again on deselect', async () => {
+      useAppStore.setState(RESET_STATE);
+      setGroupWorkflow();
+      render(<DagPane />);
+      await settle();
+
+      let props = await getCapturedProps();
+      act(() => props.onNodeClick(null, { id: 'deploy-group' }));
+      await settle();
+
+      props = await getCapturedProps();
+      const ids = props.nodes.map((n) => n.id);
+      expect(ids).toContain('deploy-group::deploy');
+      expect(ids).toContain('deploy-group::release');
+
+      // The container renders through the new `jobGroup` node type, not the
+      // ordinary `job` JobNode -- see `NODE_TYPES` in `DagPane.tsx`.
+      const container = props.nodes.find((n) => n.id === 'deploy-group');
+      expect(container?.type).toBe('jobGroup');
+      const member = props.nodes.find((n) => n.id === 'deploy-group::release');
+      expect(member?.type).toBe('job');
+
+      // The internal `requires: [deploy]` is a real edge too, reusing the
+      // same flowEdges machinery as any workflow-level dependency.
+      expect(
+        props.edges.some(
+          (e) =>
+            e.source === 'deploy-group::deploy' &&
+            e.target === 'deploy-group::release',
+        ),
+      ).toBe(true);
+
+      // Deselecting (clicking the pane background) collapses it back to one
+      // node -- selection is the only thing driving expansion, so nothing
+      // separate needs to be "closed".
+      act(() => props.onPaneClick());
+      await settle();
+      props = await getCapturedProps();
+      expect(props.nodes.map((n) => n.id)).toEqual([
+        'build',
+        'deploy-group',
+        'mystery-group',
+      ]);
+    });
+
+    it('keeps the group expanded when a member is selected directly, instead of snapping shut', async () => {
+      useAppStore.setState(RESET_STATE);
+      setGroupWorkflow();
+      render(<DagPane />);
+      await settle();
+
+      let props = await getCapturedProps();
+      act(() => props.onNodeClick(null, { id: 'deploy-group' }));
+      await settle();
+
+      props = await getCapturedProps();
+      act(() => props.onNodeClick(null, { id: 'deploy-group::release' }));
+      await settle();
+
+      props = await getCapturedProps();
+      expect(props.nodes.map((n) => n.id)).toContain('deploy-group::deploy');
+      const member = props.nodes.find((n) => n.id === 'deploy-group::release');
+      expect(member?.selected).toBe(true);
+    });
+
+    it('never expands a group whose membership could not be resolved', async () => {
+      useAppStore.setState(RESET_STATE);
+      setGroupWorkflow();
+      render(<DagPane />);
+      await settle();
+
+      let props = await getCapturedProps();
+      act(() => props.onNodeClick(null, { id: 'mystery-group' }));
+      await settle();
+
+      props = await getCapturedProps();
+      // Still exactly the three top-level nodes -- selecting an unresolvable
+      // group is a no-op for expansion, not a group that "expands into
+      // nothing" (which would look identical to a real, empty, resolved
+      // group -- the truthfulness distinction this issue's PR argues for).
+      expect(props.nodes.map((n) => n.id)).toEqual([
+        'build',
+        'deploy-group',
+        'mystery-group',
+      ]);
+      const mystery = props.nodes.find((n) => n.id === 'mystery-group');
+      expect(mystery?.type).toBe('job');
+    });
+
+    it('selecting an ordinary job elsewhere collapses a previously-expanded group', async () => {
+      useAppStore.setState(RESET_STATE);
+      setGroupWorkflow();
+      render(<DagPane />);
+      await settle();
+
+      let props = await getCapturedProps();
+      act(() => props.onNodeClick(null, { id: 'deploy-group' }));
+      await settle();
+      props = await getCapturedProps();
+      expect(props.nodes.map((n) => n.id)).toContain('deploy-group::deploy');
+
+      act(() => props.onNodeClick(null, { id: 'build' }));
+      await settle();
+      props = await getCapturedProps();
+      expect(props.nodes.map((n) => n.id)).toEqual([
+        'build',
+        'deploy-group',
+        'mystery-group',
+      ]);
     });
   });
 });

@@ -1176,6 +1176,190 @@ workflows:
 `);
       expect(buildWorkflowGraph(doc, 'main').nodes[0]?.kind).toBe('group');
     });
+
+    /*
+     * Issue #24: the group's own interior, resolved by the same machinery a
+     * workflow's `jobs:` gets, prefixed so a member's id can never collide
+     * with a sibling workflow-level one.
+     */
+    it('builds a resolvable group into a groupSubgraph, with internal requires as edges', () => {
+      const graph = buildWorkflowGraph(constructsDoc(), 'main');
+
+      const group = graph.nodes.find((n) => n.id === 'deploy-and-release');
+      const sub = group?.groupSubgraph;
+      expect(sub).toBeDefined();
+      expect(sub?.nodes.map((n) => n.id)).toEqual([
+        'deploy-and-release::deploy',
+        'deploy-and-release::release-service',
+      ]);
+      // Every member is parented back to the group, which is what lets a
+      // renderer nest it under the group's own React Flow node.
+      expect(sub?.nodes.every((n) => n.parentId === 'deploy-and-release')).toBe(
+        true,
+      );
+      // `release-service` is `type: release`, resolved to an ordinary `job`
+      // node -- a group member gets the identical kind resolution a
+      // workflow-level entry does.
+      const release = sub?.nodes.find(
+        (n) => n.id === 'deploy-and-release::release-service',
+      );
+      expect(release?.kind).toBe('job');
+      expect(release?.jobName).toBe('release-service');
+      // The internal `requires: [deploy]` becomes a real, prefixed edge --
+      // and is flagged `internal` so a renderer knows not to offer the
+      // unlink affordance a workflow-level edge gets (there is no mutation
+      // for editing a group member's own `requires:` yet).
+      expect(sub?.edges).toEqual([
+        {
+          id: 'deploy-and-release::deploy->release-service',
+          source: 'deploy-and-release::deploy',
+          target: 'deploy-and-release::release-service',
+          statuses: undefined,
+          dangling: undefined,
+          internal: true,
+        },
+      ]);
+      expect(sub?.problems).toEqual([]);
+    });
+
+    it('gives a single-member group a groupSubgraph too, with no internal edges', () => {
+      const graph = buildWorkflowGraph(constructsDoc(), 'main');
+
+      const smoke = graph.nodes.find((n) => n.id === 'smoke');
+      expect(smoke?.groupSubgraph?.nodes.map((n) => n.id)).toEqual([
+        'smoke::smoke-test',
+      ]);
+      expect(smoke?.groupSubgraph?.edges).toEqual([]);
+    });
+
+    /*
+     * The other half of issue #24's truthfulness rule: a group whose
+     * membership cannot be determined must render differently from one that
+     * resolves to zero (or more) members, never as an empty version of the
+     * same thing. `jobs:` here is a scalar, not the list the schema requires.
+     */
+    it('leaves groupMembers and groupSubgraph both undefined when jobs: cannot be read as a list', () => {
+      const doc = parse(`
+job-groups:
+  broken:
+    jobs: not-a-list
+jobs:
+  build:
+    docker: []
+workflows:
+  main:
+    jobs:
+      - broken
+`);
+      const graph = buildWorkflowGraph(doc, 'main');
+      const group = graph.nodes.find((n) => n.id === 'broken');
+      expect(group?.kind).toBe('group');
+      expect(group?.groupMembers).toBeUndefined();
+      expect(group?.groupSubgraph).toBeUndefined();
+    });
+
+    // The state genuinely reachable through this app's own editing (deleting
+    // a group's last member leaves `jobs: []` behind, deliberately -- see
+    // `getJobGroupMembers`) must stay distinct from the unresolvable case
+    // above: a real, resolved, empty group gets an empty groupSubgraph, not
+    // an absent one.
+    it('resolves a group with jobs: [] to an empty (not absent) groupSubgraph', () => {
+      const doc = parse(`
+job-groups:
+  empty-group:
+    jobs: []
+jobs:
+  build:
+    docker: []
+workflows:
+  main:
+    jobs:
+      - empty-group
+`);
+      const graph = buildWorkflowGraph(doc, 'main');
+      const group = graph.nodes.find((n) => n.id === 'empty-group');
+      expect(group?.groupMembers).toEqual([]);
+      expect(group?.groupSubgraph).toEqual({
+        nodes: [],
+        edges: [],
+        problems: [],
+      });
+    });
+
+    it('synthesises a missing hole for an internal requires: that names no sibling member', () => {
+      const doc = parse(`
+job-groups:
+  broken-internal:
+    jobs:
+      - a:
+          requires:
+            - nonexistent
+jobs:
+  a:
+    docker: []
+workflows:
+  main:
+    jobs:
+      - broken-internal
+`);
+      const graph = buildWorkflowGraph(doc, 'main');
+      const group = graph.nodes.find((n) => n.id === 'broken-internal');
+      const sub = group?.groupSubgraph;
+      expect(sub?.nodes.map((n) => n.id)).toEqual([
+        'broken-internal::a',
+        'broken-internal::nonexistent',
+      ]);
+      expect(
+        sub?.nodes.find((n) => n.id === 'broken-internal::nonexistent')
+          ?.isMissing,
+      ).toBe(true);
+      expect(sub?.edges[0]?.dangling).toBe(true);
+      // Surfaced at the workflow's own level too -- a broken internal
+      // dependency is a real problem whether or not anyone has expanded this
+      // group to look, and it's attributed to the group's own node so
+      // clicking it selects something that's actually on screen.
+      expect(
+        graph.problems.some(
+          (p) =>
+            p.nodeId === 'broken-internal' &&
+            p.severity === 'error' &&
+            p.message.includes('In job group "broken-internal"') &&
+            p.message.includes('nonexistent'),
+        ),
+      ).toBe(true);
+    });
+
+    // Issue #24's own drawing bound, not a limitation of this data: a member
+    // that names another job-groups entry resolves correctly (kind, members)
+    // but does not recurse into a second groupSubgraph -- see
+    // `buildNodesAndEdges`'s own doc comment on why the bound is exactly one
+    // level, matching what the canvas can actually draw.
+    it('resolves a group nested inside another group one level, without recursing further', () => {
+      const doc = parse(`
+job-groups:
+  outer:
+    jobs:
+      - inner
+  inner:
+    jobs:
+      - build
+jobs:
+  build:
+    docker: []
+workflows:
+  main:
+    jobs:
+      - outer
+`);
+      const graph = buildWorkflowGraph(doc, 'main');
+      const outer = graph.nodes.find((n) => n.id === 'outer');
+      const innerMember = outer?.groupSubgraph?.nodes.find(
+        (n) => n.id === 'outer::inner',
+      );
+      expect(innerMember?.kind).toBe('group');
+      expect(innerMember?.groupMembers).toEqual(['build']);
+      expect(innerMember?.groupSubgraph).toBeUndefined();
+    });
   });
 
   describe('no-op jobs', () => {
