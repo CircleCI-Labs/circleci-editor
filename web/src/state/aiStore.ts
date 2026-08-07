@@ -37,6 +37,7 @@ import {
   startAiMcpOAuth,
   type AiChatMessage,
   type AiChatSource,
+  type AiCircleCIStatus,
   type AiKeyStorage,
   type AiMcpOAuthStatus,
   type AiMcpStatus,
@@ -147,6 +148,13 @@ interface AiState {
   statusState: AiStatusState;
   providers: AiProviderStatus[];
   storage: AiKeyStorage | null;
+  /**
+   * Issue #11's CircleCI MCP server status -- `null` only until `loadStatus`
+   * has resolved at least once, the same convention `storage` already
+   * follows. Refreshed by the same request as every provider's status, so
+   * there is no separate loading state to track for it.
+   */
+  circleCI: AiCircleCIStatus | null;
   statusError: string | null;
   /** The provider the chat form will send to. Defaults to the first provider `loadStatus` reports; `AiPane` lets the user change it if more than one is ever registered. */
   selectedProvider: string;
@@ -265,6 +273,7 @@ export const useAiStore = create<AiState>((set, get) => ({
   statusState: 'loading',
   providers: [],
   storage: null,
+  circleCI: null,
   statusError: null,
   selectedProvider: '',
   messages: [],
@@ -322,6 +331,15 @@ export const useAiStore = create<AiState>((set, get) => ({
         statusState: 'ready',
         providers: status.providers,
         storage: status.storage,
+        // `?? null` guards against an older host build's response, which
+        // simply has no such field: `undefined` would otherwise reach
+        // `CircleCIToolsStatus` as neither its "not yet loaded" (`null`)
+        // nor its "loaded and off" (`{available: false}`) case, which is
+        // exactly the "state this component cannot determine must never
+        // render as though determined" failure that component's own doc
+        // comment guards against on the render side -- this is that same
+        // guarantee applied where the value first enters the store.
+        circleCI: status.circleCI ?? null,
         // Keep an already-chosen provider if it's still in the list;
         // otherwise default to the first one so the chat form always has
         // something selected once any provider exists.

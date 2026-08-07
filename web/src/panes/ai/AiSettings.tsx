@@ -3,7 +3,7 @@ import { useId, useState } from 'react';
 import { Badge } from '~/design/components/Badge';
 import { Button } from '~/design/components/Button';
 import { Spinner } from '~/design/components/Spinner';
-import type { AiKeySource } from '~/lib/rpc/client';
+import type { AiCircleCIStatus, AiKeySource } from '~/lib/rpc/client';
 import { useAiStore } from '~/state/aiStore';
 
 import { McpSettings } from './McpSettings';
@@ -23,6 +23,7 @@ import { McpSettings } from './McpSettings';
 export function AiSettings() {
   const providers = useAiStore((state) => state.providers);
   const storage = useAiStore((state) => state.storage);
+  const circleCI = useAiStore((state) => state.circleCI);
   const savingKey = useAiStore((state) => state.savingKey);
   const keyError = useAiStore((state) => state.keyError);
   const saveKey = useAiStore((state) => state.saveKey);
@@ -78,6 +79,52 @@ export function AiSettings() {
       </div>
 
       <McpSettings />
+      <CircleCIToolsStatus status={circleCI} />
+    </div>
+  );
+}
+
+/**
+ * Issue #11's read-only status line for CircleCI's own hosted MCP tools --
+ * pipeline/workflow/job status, logs, artifacts, test results. There is
+ * nothing to configure here, unlike `McpSettings`' docs server: this one
+ * rides the same CircleCI API token every other CircleCI-backed feature in
+ * this app already uses, so the only fact worth showing is whether that
+ * token exists right now, which is exactly `status` -- rendering `null`
+ * (not yet loaded) as neither "on" nor "off" is the honest-degradation rule
+ * this app applies everywhere else (see internal/host/ai.go's
+ * circleCIMCPStatus): a state this component cannot yet determine must
+ * never render as though it had already determined "off".
+ */
+function CircleCIToolsStatus({
+  status,
+}: {
+  status: AiCircleCIStatus | null | undefined;
+}) {
+  // `undefined` is treated exactly like `null` (not yet loaded), not like a
+  // third "loaded and off" state -- see aiStore.ts's own `?? null` on the
+  // way in, which is the layer that is actually supposed to prevent this
+  // ever being `undefined` at all. Guarding here too means a fixture, an
+  // older host response, or a future refactor of that guard cannot turn
+  // "we don't know yet" into a crash rather than simply rendering nothing.
+  if (status == null) return null;
+
+  return (
+    <div
+      className="flex flex-col gap-1 border-t border-cc-border pt-4"
+      data-testid="circleci-mcp-status"
+    >
+      <div className="flex items-center gap-2">
+        <h3 className="text-sm font-semibold text-cc-text">CircleCI tools</h3>
+        <Badge tone={status.available ? 'success' : 'neutral'}>
+          {status.available ? 'Available' : 'Not available'}
+        </Badge>
+      </div>
+      <p className="text-xs text-cc-text-muted">
+        {status.available
+          ? 'Read-only: the assistant can check pipeline, workflow, and job status, read logs, and list artifacts and test results. It cannot trigger, cancel, or rerun anything -- use this editor’s own Run controls for that.'
+          : (status.reason ?? 'Not available.')}
+      </p>
     </div>
   );
 }

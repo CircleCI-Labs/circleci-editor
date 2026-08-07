@@ -83,6 +83,11 @@ func groundingTestGuides() []guides.Guide {
 // sections exist and exactly how old they are.
 func newAITestServerWithGuides(t *testing.T, store *fakeKeyStore, providers ai.Registry, cache *fakeGuidesCache) *httptest.Server {
 	t.Helper()
+	// See newAITestServer's own doc comment (ai_test.go): CircleCI's MCP
+	// server (issue #11) is attached based on the ambient CIRCLE_TOKEN
+	// unless cleared, and this suite's assertions must not depend on
+	// whether the machine running them happens to have a real one.
+	clearCircleEnv(t)
 	srv, err := host.New(host.Options{
 		WorkDir:     t.TempDir(),
 		Version:     "test-version",

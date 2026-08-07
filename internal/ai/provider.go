@@ -109,6 +109,19 @@ type MCPServer struct {
 	// server requires one. The zero value (unset) is valid -- some MCP
 	// servers require no auth at all.
 	Token secret.String
+	// AllowedTools, when non-nil, restricts this server to exactly these
+	// tool names -- every other tool the server advertises, including one
+	// added upstream after this slice was last computed, is disabled by
+	// the connector itself before the model ever sees it (see
+	// internal/ai/anthropic's Complete, which turns this into the MCP
+	// connector's default_config.enabled=false plus one configs entry per
+	// name here). A nil slice (the zero value) means no restriction at
+	// all, which reproduces this app's original docs-server behaviour
+	// exactly -- every caller before issue #11 relied on that, so it must
+	// stay true without them changing anything. This is deny-by-default at
+	// the request-shape level: see internal/ai/circlecimcp for the one
+	// caller that actually sets it and why.
+	AllowedTools []string
 }
 
 // Source is one link a provider found while answering a request, surfaced

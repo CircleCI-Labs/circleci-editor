@@ -270,6 +270,90 @@ func TestClient_Complete_MCPServers_NoToken_OmitsAuthorizationToken(t *testing.T
 	assert.Assert(t, !hasToken, "authorization_token must be omitted, not sent as an empty string, when no token is configured")
 }
 
+// TestClient_Complete_MCPServers_AllowedTools_SendsDenyByDefaultToolset is
+// issue #11's gate at the wire level: a server configured with
+// AllowedTools must reach Anthropic as a deny-by-default toolset
+// (default_config.enabled=false plus one enabled configs entry per allowed
+// name) -- the documented pattern for building a read-only assistant (see
+// wireMCPToolset's doc comment) -- never as the "enable everything" shape
+// the no-AllowedTools tests above pin.
+func TestClient_Complete_MCPServers_AllowedTools_SendsDenyByDefaultToolset(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := readAll(r)
+		_ = json.Unmarshal(body, &gotBody)
+		writeJSON(w, http.StatusOK, map[string]any{"content": []map[string]string{{"type": "text", "text": "ok"}}})
+	}))
+	defer ts.Close()
+
+	client := anthropic.New(anthropic.Options{BaseURL: ts.URL})
+	_, err := client.Complete(context.Background(), secret.New(sentinelKey), "", ai.CompleteRequest{
+		Messages: []ai.Message{{Role: ai.RoleUser, Content: "hi"}},
+		MCPServers: []ai.MCPServer{
+			{
+				Name:         "circleci",
+				URL:          "https://mcp.circleci.com/v1/mcp",
+				Token:        secret.New("circle-token"),
+				AllowedTools: []string{"get_job_logs", "list_runs"},
+			},
+		},
+	})
+	assert.NilError(t, err)
+
+	tools, _ := gotBody["tools"].([]any)
+	assert.Equal(t, len(tools), 1)
+	tool := tools[0].(map[string]any)
+	assert.Equal(t, tool["mcp_server_name"], "circleci")
+
+	defaultConfig, _ := tool["default_config"].(map[string]any)
+	assert.Assert(t, defaultConfig != nil, "expected a default_config disabling every tool not explicitly allowed: %v", tool)
+	assert.Equal(t, defaultConfig["enabled"], false)
+
+	configs, _ := tool["configs"].(map[string]any)
+	assert.Equal(t, len(configs), 2)
+	for _, name := range []string{"get_job_logs", "list_runs"} {
+		entry, _ := configs[name].(map[string]any)
+		assert.Assert(t, entry != nil, "expected an explicit enabled entry for %q: %v", name, configs)
+		assert.Equal(t, entry["enabled"], true)
+	}
+	// The gate gives up nothing by omission: a tool this test never names
+	// (e.g. a write tool) must not appear in configs at all -- there is no
+	// third state between "explicitly enabled" and "covered by
+	// default_config.enabled=false".
+	_, hasCancelWorkflow := configs["cancel_workflow"]
+	assert.Assert(t, !hasCancelWorkflow)
+}
+
+// TestClient_Complete_MCPServers_EmptyAllowedTools_DisablesEveryTool covers
+// the edge AllowedTools' own doc comment calls out: a non-nil but empty
+// slice means "no tools at all", a legitimate configuration distinct from
+// nil ("no restriction"). Anything that instead treated an empty slice the
+// same as nil would silently hand back every tool a caller meant to gate.
+func TestClient_Complete_MCPServers_EmptyAllowedTools_DisablesEveryTool(t *testing.T) {
+	var gotBody map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := readAll(r)
+		_ = json.Unmarshal(body, &gotBody)
+		writeJSON(w, http.StatusOK, map[string]any{"content": []map[string]string{{"type": "text", "text": "ok"}}})
+	}))
+	defer ts.Close()
+
+	client := anthropic.New(anthropic.Options{BaseURL: ts.URL})
+	_, err := client.Complete(context.Background(), secret.New(sentinelKey), "", ai.CompleteRequest{
+		Messages:   []ai.Message{{Role: ai.RoleUser, Content: "hi"}},
+		MCPServers: []ai.MCPServer{{Name: "circleci", URL: "https://mcp.circleci.com/v1/mcp", AllowedTools: []string{}}},
+	})
+	assert.NilError(t, err)
+
+	tools, _ := gotBody["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	defaultConfig, _ := tool["default_config"].(map[string]any)
+	assert.Assert(t, defaultConfig != nil)
+	assert.Equal(t, defaultConfig["enabled"], false)
+	configs, _ := tool["configs"].(map[string]any)
+	assert.Equal(t, len(configs), 0)
+}
+
 // TestClient_Complete_ExtractsSourcesFromMCPToolResult exercises
 // extractSources against a response shaped like the MCP connector's own
 // documented mcp_tool_result block (see the package doc's citation),

@@ -128,6 +128,10 @@ function statusResponse(configured: boolean) {
       backend: 'keychain',
       location: 'macOS Keychain (service "circleci-editor")',
     },
+    // Issue #11: none of this file's tests exercise CircleCI's MCP status,
+    // but every real /api/ai/status response carries this field, so the
+    // fixture should too rather than leaving state.circleCI as `undefined`.
+    circleCI: { available: false },
   });
 }
 
