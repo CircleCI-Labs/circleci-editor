@@ -734,6 +734,29 @@
   );
 }
 
+/*
+ * Issue #24: a `job-groups` entry whose `jobs:` this app could not read as a
+ * list at all -- missing, or not a sequence (see `getJobGroupMembers`'s own
+ * doc comment). This must never look like an ordinary, collapsed,
+ * resolvable group: the whole point of the badge/tooltip pairing this
+ * modifier drives is that "membership unknown" and "membership known and
+ * currently collapsed" are different states, and rendering them the same
+ * way is exactly the "a state you cannot determine must never render like
+ * one you can" failure this project refuses to ship. Layered on top of
+ * `.vce-dag-node--group`'s own double border (kept -- this is still, in
+ * every other respect, a group) with `.vce-dag-node--undefined`'s warning
+ * tint, so it reads as "a group, but something's wrong" rather than
+ * borrowing a third, unrelated visual language.
+ */
+.vce-dag-node--group-unresolved {
+  border-color: var(--color-cc-warning);
+  background-color: color-mix(
+    in srgb,
+    var(--color-cc-warning) 10%,
+    var(--color-cc-panel-raised)
+  );
+}
+
 .vce-dag-node--undefined {
   border-color: var(--color-cc-warning);
   background-color: color-mix(
@@ -1168,6 +1191,61 @@
 
 .vce-dag-fade {
   transition: opacity 0.3s ease-in-out;
+}
+
+/*
+ * Issue #24: a selected, resolvable group's interior. Unlike `.vce-dag-node`
+ * (a job card -- solid fill, drop shadow, meant to read as *the thing that
+ * runs*), this is a boundary around several of those cards, so it is drawn
+ * as one: dashed outline, near-transparent tint, no shadow. The members
+ * inside are ordinary `.vce-dag-node`s (React Flow child/`parentId` nodes,
+ * positioned by the same ELK layout as everything else) -- this element only
+ * ever supplies the frame and the header row, never a second copy of a job
+ * card's own styling.
+ */
+.vce-dag-group-container {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1.5px dashed
+    color-mix(
+      in srgb,
+      var(--color-cc-accent) 45%,
+      var(--color-cc-border-strong)
+    );
+  border-radius: var(--radius);
+  background-color: color-mix(in srgb, var(--color-cc-accent) 5%, transparent);
+}
+
+/* Matches `GROUP_HEADER_HEIGHT` in `layout.ts` -- the padding ELK reserves
+   above this container's children is exactly this row's own height, so the
+   members it lays out never sit underneath it. */
+.vce-dag-group-container__header {
+  display: flex;
+  height: 40px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-family: var(--font-sans);
+  color: var(--color-cc-text);
+}
+
+.vce-dag-group-container__collapse {
+  margin-left: auto;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  color: var(--color-cc-text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.vce-dag-group-container__collapse:hover {
+  background-color: var(--color-cc-panel-raised);
+  color: var(--color-cc-text);
 }
 
 /*

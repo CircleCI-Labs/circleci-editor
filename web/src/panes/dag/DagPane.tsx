@@ -29,6 +29,7 @@ import { Button } from '~/design/components/Button';
 import { Panel } from '~/design/components/Panel';
 import {
   buildWorkflowGraph,
+  findGraphNode,
   listWorkflows,
   type GraphEdge,
   type GraphProblem,
@@ -76,6 +77,10 @@ import {
   wouldCreateCycle,
 } from './dagUtils';
 import { CanvasControls } from './CanvasControls';
+import {
+  GroupContainerNode,
+  type GroupContainerNodeData,
+} from './GroupContainerNode';
 import { JobNode, type JobNodeData } from './JobNode';
 import { ConfigureJobDialog } from './palette/ConfigureJobDialog';
 import { Palette } from './palette/Palette';
@@ -98,7 +103,12 @@ import { usePaletteInsertion } from './usePaletteInsertion';
 
 // Registered once at module scope: React Flow warns (and can lose node
 // identity) if `nodeTypes` is a fresh object on every render.
-const NODE_TYPES: NodeTypes = { job: JobNode };
+//
+// `jobGroup` (issue #24) is the frame drawn around a selected, resolvable
+// group's members -- a distinct type from `job` (not a `JobNode` variant)
+// because it renders a boundary around several job cards, not a job card
+// itself; see `GroupContainerNode`'s own module doc.
+const NODE_TYPES: NodeTypes = { job: JobNode, jobGroup: GroupContainerNode };
 
 // Issue #70: overrides what renders *inside* React Flow's own 'smoothstep'/
 // 'default' (bezier) edge types -- not a third custom type -- so `edge.type`
@@ -425,12 +435,23 @@ export function computeMinimapSize(nodes: PositionedNode[]): {
  * re-run and re-derive fresh ELK positions even when nothing about the
  * graph's structure changed, which is the only way to snap a node that the
  * user dragged back onto the computed layout.
+ *
+ * `expandedGroupId` (issue #24) is the one selection-derived input this
+ * effect reacts to -- everything else here is selection-independent by
+ * design (re-running ELK on every click would be wasteful). It changes only
+ * when the selection actually crosses into or out of a group's own
+ * expansion (see `DagPane`'s own `expandedGroupId` derivation), which is
+ * also exactly when the *layout* -- not just which node looks selected --
+ * genuinely needs to change: an expanded group's interior reflows the
+ * nodes around it (`layout.ts`'s compound-node handling), so this cannot be
+ * left to a `flowNodes`-only recompute the way ordinary selection is.
  */
 function useRenderedGraph(
   doc: Document | null,
   workflowName: string | undefined,
   direction: LayoutDirection,
   layoutNonce: number,
+  expandedGroupId: string | undefined,
 ): RenderedGraph | null {
   const [rendered, setRendered] = useState<RenderedGraph | null>(null);
 
@@ -443,14 +464,16 @@ function useRenderedGraph(
     let cancelled = false;
     const timer = setTimeout(() => {
       const graph = buildWorkflowGraph(doc, workflowName);
-      void layoutGraph(graph, { direction }).then((laidOut) => {
-        if (cancelled) return;
-        setRendered({
-          nodes: laidOut.nodes,
-          edges: laidOut.edges,
-          problems: graph.problems,
-        });
-      });
+      void layoutGraph(graph, { direction, expandedGroupId }).then(
+        (laidOut) => {
+          if (cancelled) return;
+          setRendered({
+            nodes: laidOut.nodes,
+            edges: laidOut.edges,
+            problems: graph.problems,
+          });
+        },
+      );
     }, LAYOUT_DEBOUNCE_MS);
 
     return () => {
@@ -458,7 +481,7 @@ function useRenderedGraph(
       clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- layoutNonce is intentionally not "used" inside the effect; bumping it is the point.
-  }, [doc, workflowName, direction, layoutNonce]);
+  }, [doc, workflowName, direction, layoutNonce, expandedGroupId]);
 
   return rendered;
 }
@@ -876,12 +899,54 @@ export function DagPane() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `selectWorkflowDiagnostics` is a pure module-level-style helper defined in this component's body; it has no captured state and re-creating it every render is not a reason to recompute this memo.
   }, [doc, workflows, allDiagnostics]);
 
+  // A synchronous (no ELK, no debounce) rebuild of the same graph, used for
+  // everything that needs the *current* structure immediately: cycle
+  // checks while dragging a connection, deriving `expandedGroupId` below,
+  // and the inspector drawer's view of the selected node. `rendered` below
+  // is intentionally debounced (so ELK doesn't re-run on every keystroke)
+  // and therefore briefly stale right after an edit -- fine for node
+  // *positions*, not for validation logic or for deciding what to expand.
+  const liveGraph = useMemo(
+    () =>
+      doc && activeWorkflow ? buildWorkflowGraph(doc, activeWorkflow) : null,
+    [doc, activeWorkflow],
+  );
+
+  /**
+   * Issue #24: the one group (at most) whose interior `layoutGraph` should
+   * draw as a compound node -- derived from *selection*, not a separate
+   * open/closed flag, which is the whole reason "shown on selection" costs
+   * no extra state here: this is `undefined` exactly when nothing selected
+   * is a group or a member of one, and recomputes to the right id the
+   * moment selection moves into or out of one.
+   *
+   * A member's own id counts too (not only the group's own), so selecting
+   * an already-expanded group's member for inspection doesn't snap the
+   * group shut out from under it -- `groupSubgraph.nodes` is exactly the
+   * member id namespace `findGraphNode` also searches, kept in sync because
+   * both read the identical `liveGraph` produced by `buildWorkflowGraph`.
+   */
+  const expandedGroupId = useMemo(() => {
+    if (!liveGraph || !selectedNodeId) return undefined;
+    for (const node of liveGraph.nodes) {
+      if (node.kind !== 'group' || !node.groupSubgraph) continue;
+      if (node.id === selectedNodeId) return node.id;
+      if (
+        node.groupSubgraph.nodes.some((member) => member.id === selectedNodeId)
+      ) {
+        return node.id;
+      }
+    }
+    return undefined;
+  }, [liveGraph, selectedNodeId]);
+
   const [layoutNonce, setLayoutNonce] = useState(0);
   const rendered = useRenderedGraph(
     doc,
     activeWorkflow,
     dagDirection,
     layoutNonce,
+    expandedGroupId,
   );
   // Issue #70: manual drag positions, persisted outside `doc` (config has no
   // coordinate fields -- see `nodePositionStore`'s own doc comment) and
@@ -1093,25 +1158,27 @@ export function DagPane() {
     setAutoFocusNameNodeId,
   );
 
-  // A synchronous (no ELK, no debounce) rebuild of the same graph, used for
-  // everything that needs the *current* structure immediately: cycle
-  // checks while dragging a connection, and the inspector drawer's view of
-  // the selected node. `rendered` above is intentionally debounced (so ELK
-  // doesn't re-run on every keystroke) and therefore briefly stale right
-  // after an edit -- fine for node *positions*, not for validation logic.
-  const liveGraph = useMemo(
-    () =>
-      doc && activeWorkflow ? buildWorkflowGraph(doc, activeWorkflow) : null,
-    [doc, activeWorkflow],
-  );
-
+  // Issue #24: resolved via `findGraphNode`, not a bare `.nodes.find(...)`,
+  // because `selectedNodeId`/`pendingDeleteNodeId` can now name a group
+  // *member* -- which never appears in `liveGraph.nodes` itself (that array
+  // stays one entry per top-level invocation; see `WorkflowGraph.nodes`'s
+  // own contract), only inside its group's `groupSubgraph`. Without this, an
+  // expanded member would be selectable on the canvas but the inspector
+  // would show its placeholder "select a job" text instead of the member --
+  // exactly the "keep working for members too" requirement this issue
+  // named.
   const selectedNode = useMemo(
-    () => liveGraph?.nodes.find((node) => node.id === selectedNodeId) ?? null,
+    () =>
+      (liveGraph && selectedNodeId
+        ? findGraphNode(liveGraph, selectedNodeId)
+        : undefined) ?? null,
     [liveGraph, selectedNodeId],
   );
   const pendingDeleteNode = useMemo(
     () =>
-      liveGraph?.nodes.find((node) => node.id === pendingDeleteNodeId) ?? null,
+      (liveGraph && pendingDeleteNodeId
+        ? findGraphNode(liveGraph, pendingDeleteNodeId)
+        : undefined) ?? null,
     [liveGraph, pendingDeleteNodeId],
   );
   /**
@@ -1216,7 +1283,19 @@ export function DagPane() {
   // ancestors.
   const ancestorChain = useMemo(() => {
     if (!selectedNodeId || !rendered) return null;
-    if (!rendered.nodes.some((node) => node.id === selectedNodeId)) return null;
+    // Issue #24: a group *member*'s own chain (once expanded, it's a real,
+    // selectable node in `rendered.nodes` too -- see `layout.ts`) is
+    // deliberately excluded here rather than computed: every one of its
+    // edges is internal to the group, so the chain would never reach any
+    // top-level node, and the visible result would be "select a member,
+    // watch the rest of the graph -- including the very container showing
+    // it -- dim to 30% opacity", which reads as a bug, not a feature. Plain
+    // job/orb/approval/group selection is unaffected: `parentId` is only
+    // ever set on a member (`GraphNode.parentId`'s own doc comment).
+    const topLevelHit = rendered.nodes.find(
+      (node) => node.id === selectedNodeId && !node.parentId,
+    );
+    if (!topLevelHit) return null;
     return getAncestorChain(rendered.edges, selectedNodeId);
   }, [rendered, selectedNodeId]);
 
@@ -1277,10 +1356,16 @@ export function DagPane() {
     setHoveredEdgeId(null);
   }, []);
 
-  const flowNodes: Node<JobNodeData>[] = useMemo(() => {
+  const flowNodes: Node[] = useMemo(() => {
     if (!rendered || !activeWorkflow) return [];
     return rendered.nodes.map((node) => {
       const dimmed = ancestorChain !== null && !ancestorChain.has(node.id);
+      // Issue #24: a group member's position is always ELK's own, relative
+      // to its container (`layout.ts`'s compound-node handling, mirrored by
+      // React Flow's own `parentId` node relationship below) -- manual
+      // dragging isn't offered for one (see `draggable` below), so there is
+      // never a persisted or in-flight override to look up for it.
+      const isMember = node.parentId !== undefined;
       // Issue #70: a manually-dragged position (see `onNodeDragStop` below)
       // always wins over ELK's own `node.x`/`node.y` for a node that has
       // one. This is looked up by id from `manualPositions`, not from
@@ -1303,7 +1388,9 @@ export function DagPane() {
         activeWorkflow,
         node.id,
       );
-      const position = live ?? manual ?? { x: node.x, y: node.y };
+      const position = isMember
+        ? { x: node.x, y: node.y }
+        : (live ?? manual ?? { x: node.x, y: node.y });
       // Issue #12: a `missing` placeholder has no line in the config -- it
       // stands for a `requires:` target nothing provides. Every affordance
       // that would edit "this node" is therefore withheld: there is no entry
@@ -1311,28 +1398,92 @@ export function DagPane() {
       // `requires:` could legally name. The fix is always to edit the
       // `requires:` pointing at it, or to add the entry it's asking for.
       const isMissing = node.isMissing === true;
+      // `vce-dag-node--dimmed` lands on React Flow's own node wrapper (not
+      // inside `JobNode`'s own markup), so opacity applies to the whole
+      // node -- box, handles, delete affordance -- with one rule; see
+      // `.vce-dag-node--dimmed` in styles.css. The transition class is
+      // withheld above `LARGE_GRAPH_THRESHOLD` so a big graph's dim/undim
+      // is instant rather than animating dozens of nodes at once.
+      const dimmedClassName = dimmed
+        ? `vce-dag-node--dimmed${isLargeGraph ? '' : ' vce-dag-fade'}`
+        : undefined;
+
+      // Issue #24: the expanded group itself renders as the boundary frame
+      // around its members, never as an ordinary `JobNode` -- see
+      // `GroupContainerNode`'s own module doc on why that's a distinct
+      // component rather than a bigger `JobNode` variant.
+      if (node.id === expandedGroupId && node.groupSubgraph) {
+        const containerData: GroupContainerNodeData = {
+          node,
+          onCollapse: () => selectNode(null),
+        };
+        return {
+          id: node.id,
+          type: 'jobGroup',
+          position,
+          data: containerData,
+          // Not draggable/connectable: this frame's size and position are
+          // entirely ELK's (it exists to fit its own children), and it has
+          // no `requires:` of its own to drag a connection from -- the
+          // group's external edges still attach to this id exactly as they
+          // did while collapsed (unaffected by any of this).
+          draggable: false,
+          connectable: false,
+          selectable: true,
+          selected: node.id === selectedNodeId,
+          className: dimmedClassName,
+          style: { width: node.width, height: node.height },
+          initialWidth: node.width,
+          initialHeight: node.height,
+        };
+      }
+
       return {
         id: node.id,
         type: 'job',
         position,
+        // React Flow's own compound-node relationship (issue #24): a
+        // member's position above is already relative to its group's own
+        // origin, exactly what `parentId`+`extent: 'parent'` expects. Only
+        // ever set for a member -- an ordinary top-level node keeps
+        // rendering exactly as it did before this existed.
+        parentId: isMember ? node.parentId : undefined,
+        extent: isMember ? 'parent' : undefined,
         data: {
           node,
           direction: dagDirection,
-          onRequestDelete: isMissing ? undefined : handleRequestDelete,
-          onDropElement: isMissing ? undefined : insertion.dropOnJobNode,
-          onDropStep: isMissing
-            ? undefined
-            : paletteInsertion.dropStepOnJobNode,
-          onDropExecutorRefused: isMissing
-            ? undefined
-            : paletteInsertion.refuseExecutorOnJobNode,
+          // Issue #24: a group member gets none of the editing affordances a
+          // workflow-level entry does -- there is no mutation yet for
+          // touching `job-groups.<name>.jobs[i]` from the canvas (editing
+          // its `requires:`, dropping a step/orb command onto it as an
+          // entry-level change, adding a context), and offering a control
+          // that would silently no-op or edit the wrong path is exactly the
+          // dishonest UI this project refuses to ship. It stays fully
+          // selectable (see `findGraphNode`), and its own *job definition* --
+          // steps, executor, rename -- is still genuinely editable via the
+          // inspector, because that edits `jobs.<name>`, unaffected by which
+          // workflow entry or group invoked it.
+          onRequestDelete:
+            isMissing || isMember ? undefined : handleRequestDelete,
+          onDropElement:
+            isMissing || isMember ? undefined : insertion.dropOnJobNode,
+          onDropStep:
+            isMissing || isMember
+              ? undefined
+              : paletteInsertion.dropStepOnJobNode,
+          onDropExecutorRefused:
+            isMissing || isMember
+              ? undefined
+              : paletteInsertion.refuseExecutorOnJobNode,
           // Withheld for a `missing` placeholder for the same reason as every
           // other edit affordance above (issue #12): it has no workflow entry,
           // so there is no `context:` for one to be added to.
-          onDropContext: isMissing
-            ? undefined
-            : paletteInsertion.dropContextOnJobNode,
-          onActivateHandle: isMissing ? undefined : handleHandleActivate,
+          onDropContext:
+            isMissing || isMember
+              ? undefined
+              : paletteInsertion.dropContextOnJobNode,
+          onActivateHandle:
+            isMissing || isMember ? undefined : handleHandleActivate,
           isKeyboardConnectSource: node.id === keyboardConnectFromId,
           // Issue #148: absent (not an empty array) for every node in a config
           // that validates, so a healthy graph carries no error state at all.
@@ -1347,20 +1498,15 @@ export function DagPane() {
         // is harmless and sometimes useful -- but never `connectable` (a new
         // `requires:` naming an id that doesn't exist would just be a second
         // broken reference) and never `selectable` (the inspector has no entry
-        // to inspect; see `flowNodes`' `isMissing` comment above).
-        draggable: true,
-        connectable: !isMissing,
+        // to inspect; see `flowNodes`' `isMissing` comment above). A member
+        // is never draggable/connectable/deletable either (issue #24, this
+        // function's own comment above), but stays selectable.
+        draggable: !isMember,
+        connectable: !isMissing && !isMember,
         selectable: !isMissing,
+        deletable: !isMember,
         selected: !isMissing && node.id === selectedNodeId,
-        // `vce-dag-node--dimmed` lands on React Flow's own node wrapper (not
-        // inside `JobNode`'s own markup), so opacity applies to the whole
-        // node -- box, handles, delete affordance -- with one rule; see
-        // `.vce-dag-node--dimmed` in styles.css. The transition class is
-        // withheld above `LARGE_GRAPH_THRESHOLD` so a big graph's dim/undim
-        // is instant rather than animating dozens of nodes at once.
-        className: dimmed
-          ? `vce-dag-node--dimmed${isLargeGraph ? '' : ' vce-dag-fade'}`
-          : undefined,
+        className: dimmedClassName,
         style: { width: node.width, height: node.height },
         // Deliberately `initialWidth`/`initialHeight`, not the top-level
         // `width`/`height` fields, and not *only* the CSS size above:
@@ -1399,6 +1545,8 @@ export function DagPane() {
     ancestorChain,
     isLargeGraph,
     diagnosticsByNode,
+    expandedGroupId,
+    selectNode,
   ]);
 
   const flowEdges: Edge[] = useMemo(() => {
@@ -1471,12 +1619,27 @@ export function DagPane() {
         // edge into existence (#29/#32). `onRemove` closes over this edge's
         // own endpoints rather than over `edge.id`, so it keeps working even
         // though `removeRequire` is keyed by (target, source), not edge id.
+        //
+        // Issue #24: withheld entirely for an edge inside an expanded
+        // group's own interior (`edge.internal`) -- unlinking one would mean
+        // editing `job-groups.<name>.jobs[i].requires`, and this app has no
+        // mutation for that yet. `deletable: false` below is the second half
+        // of the same refusal, covering React Flow's own keyboard-delete
+        // entry point in addition to this button.
         data: {
           statuses: edge.statuses,
-          canRemove: edge.id === hoveredEdgeId || edge.id === selectedEdgeId,
-          onRemove: () =>
-            removeEdgeDependency({ source: edge.source, target: edge.target }),
+          canRemove:
+            !edge.internal &&
+            (edge.id === hoveredEdgeId || edge.id === selectedEdgeId),
+          onRemove: edge.internal
+            ? undefined
+            : () =>
+                removeEdgeDependency({
+                  source: edge.source,
+                  target: edge.target,
+                }),
         },
+        deletable: !edge.internal,
         className: classNames.length > 0 ? classNames.join(' ') : undefined,
       };
     });

@@ -130,6 +130,13 @@ function JobNodeImpl({ id, data, selected, dragging }: JobNodeProps) {
   const sourcePosition = isHorizontal ? Position.Right : Position.Bottom;
 
   const label = node.alias;
+  // Issue #24: a group whose `jobs:` this app could not read as a list at
+  // all -- distinct from a group that resolved to zero (or more) members,
+  // and it must never render the same way one of those does (see
+  // `getJobGroupMembers`'s own doc comment on why `undefined` and `[]` mean
+  // different things here).
+  const isUnresolvedGroup =
+    node.kind === 'group' && node.groupMembers === undefined;
   // Issue #12: a `missing` placeholder stands for a `requires:` target nothing
   // in the workflow provides. It has no job name of its own worth showing (its
   // `jobName` is a copy of the id) and no editing affordances at all -- see
@@ -257,7 +264,9 @@ function JobNodeImpl({ id, data, selected, dragging }: JobNodeProps) {
     <div
       className={`vce-dag-node vce-dag-node--${node.kind}${
         !node.isDefined && !isMissing ? ' vce-dag-node--undefined' : ''
-      }${selected ? ' vce-dag-node--selected' : ''}${
+      }${isUnresolvedGroup ? ' vce-dag-node--group-unresolved' : ''}${
+        selected ? ' vce-dag-node--selected' : ''
+      }${
         dragState ? ` vce-dag-node--drop-${dragState}` : ''
       }${hasDiagnostic ? ' vce-dag-node--diagnostic' : ''}${
         isKeyboardConnectSource ? ' vce-dag-node--connect-source' : ''
@@ -387,20 +396,43 @@ function JobNodeImpl({ id, data, selected, dragging }: JobNodeProps) {
           this, drew as one -- so a node that actually runs several jobs read as
           a single job with a slightly odd name. One node per invocation is the
           truthful shape (the workflow invokes the group as a unit, and its
-          `requires:` applies to the unit), but it has to *say* it is a group,
-          and the members belong in the tooltip where they cost no width.
+          `requires:` applies to the unit), but it has to *say* it is a group.
+
+          Issue #24: the members themselves moved out of this tooltip and onto
+          the canvas -- `DagPane` draws them for real, as sibling nodes inside
+          a container, the moment this group is selected (see its own module
+          doc for why "on selection" rather than always or never). What stays
+          here is the disclosure hint (`groupSubgraph ? ' ▸' : ''`) that
+          this node *has* something more to show and how to get it, plus the
+          unresolved case, which never gets that hint because there is nothing
+          to expand into.
         */}
         {node.kind === 'group' ? (
-          <span
-            className="vce-dag-kind-label text-2xs"
-            title={
-              node.groupMembers && node.groupMembers.length > 0
-                ? `Job group "${node.jobName}", which runs: ${node.groupMembers.join(', ')}`
-                : `Job group "${node.jobName}"`
-            }
-          >
-            Group
-          </span>
+          isUnresolvedGroup ? (
+            <span
+              className="vce-dag-warning-label text-2xs"
+              role="status"
+              title={`Job group "${node.jobName}" -- its membership could not be determined: job-groups.${node.jobName}.jobs is missing or is not a list. Fix its jobs: list to see what this group runs.`}
+            >
+              Group: unresolved
+            </span>
+          ) : (
+            <span
+              className="vce-dag-kind-label text-2xs"
+              title={
+                (node.groupMembers && node.groupMembers.length > 0
+                  ? `Job group "${node.jobName}", which runs: ${node.groupMembers.join(', ')}.`
+                  : `Job group "${node.jobName}" currently has no members.`) +
+                (node.groupSubgraph
+                  ? selected
+                    ? ' Click elsewhere to collapse it.'
+                    : ' Select to see its members.'
+                  : '')
+              }
+            >
+              Group{node.groupSubgraph ? ' ▸' : ''}
+            </span>
+          )
         ) : null}
         {/*
           Issue #220: `serial-group` is the one piece of orchestration on an

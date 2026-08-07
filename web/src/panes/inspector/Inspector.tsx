@@ -2386,10 +2386,23 @@ function RequiresSection({
   node,
   workflowName,
   mutate,
+  editable = true,
 }: {
   node: GraphNode;
   workflowName: string | undefined;
   mutate: MutateFn;
+  /**
+   * False for a group member (issue #24): its `requires:` is real,
+   * accurately-parsed data (an internal dependency on a sibling member), but
+   * removing one would mean editing `job-groups.<name>.jobs[i].requires`,
+   * and this app has no mutation for that path yet. Withholding the ×
+   * button here -- rather than wiring it to `removeRequire`, which assumes
+   * a *workflow*-level entry and would silently do nothing for a member --
+   * is the same "don't offer a control that quietly no-ops" rule the canvas
+   * side applies to an internal edge's own unlink affordance
+   * (`GraphEdge.internal`).
+   */
+  editable?: boolean;
 }) {
   return (
     <CollapsibleSection
@@ -2411,19 +2424,21 @@ function RequiresSection({
               className="flex items-center gap-1 rounded-full border border-cc-border-strong bg-cc-panel-raised px-2 py-0.5 text-2xs font-mono text-cc-text"
             >
               {requiredId}
-              <button
-                type="button"
-                aria-label={`Remove requirement on ${requiredId}`}
-                onClick={() =>
-                  workflowName &&
-                  mutate((d) =>
-                    removeRequire(d, workflowName, node.id, requiredId),
-                  )
-                }
-                className="rounded-full px-1 text-cc-text-muted hover:bg-cc-danger/20 hover:text-cc-danger"
-              >
-                &times;
-              </button>
+              {editable ? (
+                <button
+                  type="button"
+                  aria-label={`Remove requirement on ${requiredId}`}
+                  onClick={() =>
+                    workflowName &&
+                    mutate((d) =>
+                      removeRequire(d, workflowName, node.id, requiredId),
+                    )
+                  }
+                  className="rounded-full px-1 text-cc-text-muted hover:bg-cc-danger/20 hover:text-cc-danger"
+                >
+                  &times;
+                </button>
+              ) : null}
             </li>
           ))}
         </ul>
@@ -3343,6 +3358,7 @@ function JobIdentitySection({
   canEditJobBody,
   mutate,
   autoFocusName,
+  showAliasField = true,
 }: {
   doc: Document;
   node: GraphNode;
@@ -3350,6 +3366,18 @@ function JobIdentitySection({
   canEditJobBody: boolean;
   mutate: MutateFn;
   autoFocusName: boolean;
+  /**
+   * False for a group member (issue #24). `AliasField` calls
+   * `setWorkflowJobEntryAlias`, which edits `workflows.<w>.jobs[i].name` --
+   * a member has no such entry (it lives at
+   * `job-groups.<name>.jobs[i]` instead), so rendering that field here would
+   * either silently do nothing or edit a workflow entry that isn't this
+   * member's. The job-rename/read-only row above is unaffected: renaming
+   * `jobs.<name>` itself is genuinely safe and correct for a member too
+   * (`renameJob` already walks every `job-groups` entry, not only
+   * `workflows:`).
+   */
+  showAliasField?: boolean;
 }) {
   const jobFieldId = useId();
   return (
@@ -3365,7 +3393,9 @@ function JobIdentitySection({
       ) : (
         <JobReadOnlyRow jobName={node.jobName} />
       )}
-      <AliasField workflowName={workflowName} node={node} mutate={mutate} />
+      {showAliasField ? (
+        <AliasField workflowName={workflowName} node={node} mutate={mutate} />
+      ) : null}
     </>
   );
 }
@@ -3406,7 +3436,43 @@ function jobBodyReadOnlyNote(node: GraphNode): string {
   if (node.kind === 'orb') {
     return `Set this job's parameters below -- along with its context, filters, pre/post-steps and requires. Those are how you configure an orb job, and they are ordinary editable config. What you cannot change here is the job's definition: ${node.jobName}'s steps and executor live inside the "${node.orbRef}" orb rather than in this file, which is why no steps are listed above.`;
   }
+  // Issue #24: this used to fall through to the generic "not defined under
+  // jobs:" sentence below, which is actively wrong for a group -- a group
+  // has no `jobs:` entry to be "not defined" *as*, and reporting one for
+  // perfectly valid config is the exact false-positive issue #220 already
+  // fixed once for the canvas badge. `groupMembers === undefined` is this
+  // app's own "could not read a membership list" signal (see
+  // `getJobGroupMembers`'s own doc comment) -- distinct from a real, empty
+  // membership, which gets the ordinary member-count sentence instead.
+  if (node.kind === 'group') {
+    if (node.groupMembers === undefined) {
+      return `"${node.jobName}" is a job group, but its membership could not be determined: job-groups.${node.jobName}.jobs is missing or is not a list. Fix its jobs: list in the YAML to see what this group runs.`;
+    }
+    const count = node.groupMembers.length;
+    const memberSummary =
+      count === 0
+        ? 'currently has no members'
+        : `runs: ${node.groupMembers.join(', ')}`;
+    return `"${node.jobName}" is a job group -- it invokes ${count === 1 ? 'one job' : `${count} jobs`} as a single unit, and ${memberSummary}. It has no job definition of its own to edit here; select it on the canvas to see its members drawn in place, or select a member directly to edit its own job body. Its usage in this workflow, below, is still editable.`;
+  }
   return `"${node.jobName}" is not defined under jobs: in this config, so there's no job body to edit here. Add a job with that name, or point this entry at an existing one. Its usage in this workflow, below, is still editable.`;
+}
+
+/**
+ * The note shown in a group *member*'s inspector body in place of
+ * `WorkflowEntryOptionsSection`/`LocalJobParamsSection`/`OrbJobParamsSection`
+ * (issue #24). Those sections all mutate a *workflow entry* --
+ * `workflows.<w>.jobs[i].<field>` -- and a member has no such entry: it
+ * lives at `job-groups.<name>.jobs[i]` instead, a path this app has no
+ * mutation for yet. Rather than wiring those sections to a path they don't
+ * actually edit (which would either silently no-op or, worse, edit the
+ * wrong location), this states the limit plainly. The member's context/
+ * filters/pre-post-steps/parameters are still real, accurately-parsed data
+ * (`node.entryOptions` -- built by the identical reader a workflow entry's
+ * own options use) and render read-only just below.
+ */
+function groupMemberOptionsReadOnlyNote(parentGroupName: string): string {
+  return `This entry's context, filters, pre/post-steps and call-site parameters are set inside the "${parentGroupName}" job group's own jobs: list, shown read-only below. Editing them from this pane isn't supported yet -- edit job-groups.${parentGroupName}.jobs in the YAML directly.`;
 }
 
 /**
@@ -3923,6 +3989,17 @@ export function Inspector({
   // rendered unconditionally below.
   const canEditJobBody = node?.kind === 'job' && node.isDefined;
 
+  // Issue #24: true only for a node drawn as an expanded group's member
+  // (`GraphNode.parentId`'s own doc comment) -- gates every section below
+  // that would otherwise mutate a *workflow entry*
+  // (`workflows.<w>.jobs[i].<field>`), a path a member simply doesn't have
+  // (it lives at `job-groups.<name>.jobs[i]` instead, which this app cannot
+  // edit yet). Job-body edits (rename, steps, executor, declared
+  // parameters) are unaffected: those mutate `jobs.<name>` itself, which is
+  // exactly as editable for a job invoked via a group as for one invoked
+  // directly.
+  const isGroupMember = node?.parentId !== undefined;
+
   // Issue #288: the workflow-level body is rendered instead of a job's own
   // whenever a job isn't selected but the workflow itself is -- see
   // `InspectorProps.workflowSelected`'s own doc comment for why `node`
@@ -3965,6 +4042,19 @@ export function Inspector({
               {node.matrixGroupSize ? ` (1 of ${node.matrixGroupSize})` : ''}
             </Badge>
           ) : null}
+          {/* Issue #24: this node is one of an expanded group's members --
+              `node.parentId` is the group's own canvas id, which is what a
+              click on this badge's tooltip (or the group itself) resolves
+              to. Kept distinct from the `matrix`/`undefined` badges above:
+              those describe this node's own shape, this describes *where it
+              lives*. */}
+          {isGroupMember ? (
+            <span
+              title={`This job runs as a member of the "${node.parentId}" job group, not as a direct workflow entry.`}
+            >
+              <Badge tone="neutral">group member</Badge>
+            </span>
+          ) : null}
         </div>
 
         <JobIdentitySection
@@ -3974,6 +4064,7 @@ export function Inspector({
           canEditJobBody={canEditJobBody}
           mutate={mutate}
           autoFocusName={autoFocusName}
+          showAliasField={!isGroupMember}
         />
 
         {!canEditJobBody ? (
@@ -4016,57 +4107,80 @@ export function Inspector({
           </>
         )}
 
-        {/*
-          Issue #252: an orb job's parameters render *here*, immediately
-          below the note that explains why there are no steps to edit --
-          taking the slot the job body occupies for a local job, because
-          for an orb job they are the equivalent thing: the content you
-          came to this pane to change.
+        {isGroupMember ? (
+          // Issue #24: every section below this point (orb job parameters,
+          // context/filters/pre-post-steps, a local job's own call-site
+          // parameters) mutates a *workflow entry* -- a path this member
+          // doesn't have (see `groupMemberOptionsReadOnlyNote`'s own doc
+          // comment). The data itself is still real and accurately parsed
+          // (`node.entryOptions`, read by the identical function a workflow
+          // entry's own options use), so it's summarised read-only instead
+          // of silently vanishing.
+          <p className="mb-4 text-xs text-cc-text-muted">
+            {groupMemberOptionsReadOnlyNote(node.parentId ?? '')}
+            {node.entryOptions.context.length > 0
+              ? ` Context: ${node.entryOptions.context.join(', ')}.`
+              : ''}
+            {Object.keys(node.entryOptions.parameters).length > 0
+              ? ` Parameters: ${Object.keys(node.entryOptions.parameters).join(', ')}.`
+              : ''}
+          </p>
+        ) : (
+          <>
+            {/*
+              Issue #252: an orb job's parameters render *here*, immediately
+              below the note that explains why there are no steps to edit --
+              taking the slot the job body occupies for a local job, because
+              for an orb job they are the equivalent thing: the content you
+              came to this pane to change.
 
-          They used to be second-to-last, below Context, Filters,
-          Pre-steps and Post-steps, which is what made the owner's "maybe
-          I do if you scroll down" a necessary discovery rather than an
-          obvious one. Rewording the note (see `jobBodyReadOnlyNote`)
-          without moving this would have fixed the sentence and left the
-          scroll.
-        */}
-        {node.kind === 'orb' ? (
-          <OrbJobParamsSection
-            doc={doc}
-            node={node}
-            workflowName={workflowName}
-            mutate={mutate}
-          />
-        ) : null}
+              They used to be second-to-last, below Context, Filters,
+              Pre-steps and Post-steps, which is what made the owner's "maybe
+              I do if you scroll down" a necessary discovery rather than an
+              obvious one. Rewording the note (see `jobBodyReadOnlyNote`)
+              without moving this would have fixed the sentence and left the
+              scroll.
+            */}
+            {node.kind === 'orb' ? (
+              <OrbJobParamsSection
+                doc={doc}
+                node={node}
+                workflowName={workflowName}
+                mutate={mutate}
+              />
+            ) : null}
 
-        <WorkflowEntryOptionsSection
-          node={node}
-          workflowName={workflowName}
-          mutate={mutate}
-          schema={schema}
-          orbAliases={orbAliases}
-          onDropOrbCommandOnEntrySteps={onDropOrbCommandOnEntrySteps}
-          onDropPaletteStepOnEntrySteps={onDropPaletteStepOnEntrySteps}
-        />
+            <WorkflowEntryOptionsSection
+              node={node}
+              workflowName={workflowName}
+              mutate={mutate}
+              schema={schema}
+              orbAliases={orbAliases}
+              onDropOrbCommandOnEntrySteps={onDropOrbCommandOnEntrySteps}
+              onDropPaletteStepOnEntrySteps={onDropPaletteStepOnEntrySteps}
+            />
 
-        {/*
-          A local job's own call-site parameters keep their old position at
-          the end of the workflow-entry options: unlike an orb job, its
-          body is right there above, so nothing is hidden by leaving these
-          last, and moving them would be a change #252 did not ask for.
-        */}
-        {node.kind === 'job' && node.isDefined ? (
-          <LocalJobParamsSection
-            doc={doc}
-            node={node}
-            workflowName={workflowName}
-            mutate={mutate}
-          />
-        ) : null}
+            {/*
+              A local job's own call-site parameters keep their old position at
+              the end of the workflow-entry options: unlike an orb job, its
+              body is right there above, so nothing is hidden by leaving these
+              last, and moving them would be a change #252 did not ask for.
+            */}
+            {node.kind === 'job' && node.isDefined ? (
+              <LocalJobParamsSection
+                doc={doc}
+                node={node}
+                workflowName={workflowName}
+                mutate={mutate}
+              />
+            ) : null}
+          </>
+        )}
         <RequiresSection
           node={node}
           workflowName={workflowName}
           mutate={mutate}
+          editable={!isGroupMember}
         />
       </>
     );
