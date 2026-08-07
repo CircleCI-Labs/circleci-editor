@@ -155,6 +155,99 @@ func TestServer_AIStatus_ReportsUnconfiguredProviderAndStorageLocation(t *testin
 	assert.Equal(t, got.Storage.Location, "/fake/keys.json")
 }
 
+// TestServer_AIStatus_ReportsSourceStore_WhenOnlyStored pins the ordinary
+// case: a key in the store, nothing in the environment, so Source and
+// StoredKeyShadowed must say exactly that -- neither field existed before
+// issue #7, and the whole fix rests on them being right in every branch.
+func TestServer_AIStatus_ReportsSourceStore_WhenOnlyStored(t *testing.T) {
+	store := newFakeKeyStore()
+	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
+	base := newAITestServer(t, store, ai.Registry{"anthropic": &fakeProvider{name: "anthropic", label: "Anthropic", model: "m"}})
+
+	status, body := doAIRequest(t, base, http.MethodGet, "/api/ai/status", nil)
+	assert.Equal(t, status, http.StatusOK)
+
+	got := decodeAIStatus(t, body)
+	assert.Equal(t, len(got.Providers), 1)
+	p := got.Providers[0]
+	assert.Equal(t, p.Configured, true)
+	assert.Equal(t, p.Source, "store")
+	assert.Equal(t, p.StoredKeyShadowed, false)
+}
+
+// TestServer_AIStatus_ReportsSourceEnvironment_NothingStored is issue #7's
+// first broken case: before this fix, this state (an environment variable
+// supplying the key, nothing ever stored) looked identical over the wire to
+// "a key is stored" -- both were just `"configured":true`. A pane cannot
+// honestly offer to remove a key that was never stored, and it cannot do
+// that without this distinction on the wire.
+func TestServer_AIStatus_ReportsSourceEnvironment_NothingStored(t *testing.T) {
+	envVar := keystore.KeyEnvVar("anthropic")
+	t.Setenv(envVar, aiSentinelKey)
+	store := newFakeKeyStore()
+	base := newAITestServer(t, store, ai.Registry{"anthropic": &fakeProvider{name: "anthropic", label: "Anthropic", model: "m"}})
+
+	status, body := doAIRequest(t, base, http.MethodGet, "/api/ai/status", nil)
+	assert.Equal(t, status, http.StatusOK)
+	assert.Assert(t, !strings.Contains(body, aiSentinelKey), "status response leaked the environment key: %s", body)
+
+	got := decodeAIStatus(t, body)
+	assert.Equal(t, len(got.Providers), 1)
+	p := got.Providers[0]
+	assert.Equal(t, p.Configured, true)
+	assert.Equal(t, p.Source, "environment")
+	assert.Equal(t, p.EnvVar, envVar)
+	assert.Equal(t, p.StoredKeyShadowed, false)
+}
+
+// TestServer_AIStatus_ReportsSourceEnvironment_ShadowingAStoredKey is issue
+// #7's second broken case, and the one the "Remove" button actually acts
+// on: a key is genuinely stored, but an environment variable is currently
+// overriding it. StoredKeyShadowed=true is what tells the pane "there is
+// something real to delete here, but deleting it will not change what's in
+// effect" -- the honest version of the state that used to render as plain
+// "Configured" with nothing to distinguish it from the environment-only case
+// above.
+func TestServer_AIStatus_ReportsSourceEnvironment_ShadowingAStoredKey(t *testing.T) {
+	envVar := keystore.KeyEnvVar("anthropic")
+	t.Setenv(envVar, "sk-ant-env-wins")
+	store := newFakeKeyStore()
+	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
+	base := newAITestServer(t, store, ai.Registry{"anthropic": &fakeProvider{name: "anthropic", label: "Anthropic", model: "m"}})
+
+	status, body := doAIRequest(t, base, http.MethodGet, "/api/ai/status", nil)
+	assert.Equal(t, status, http.StatusOK)
+
+	got := decodeAIStatus(t, body)
+	assert.Equal(t, len(got.Providers), 1)
+	p := got.Providers[0]
+	assert.Equal(t, p.Configured, true)
+	assert.Equal(t, p.Source, "environment")
+	assert.Equal(t, p.EnvVar, envVar)
+	assert.Equal(t, p.StoredKeyShadowed, true)
+}
+
+// aiStatusPayload/decodeAIStatus mirror GET /api/ai/status's shape for
+// these tests -- kept out of TestServer_AIStatus_ReportsUnconfigured...'s own
+// anonymous struct because every source-provenance test below needs the
+// same fields.
+type aiStatusPayload struct {
+	Providers []struct {
+		ID                string `json:"id"`
+		Configured        bool   `json:"configured"`
+		Source            string `json:"source"`
+		EnvVar            string `json:"envVar"`
+		StoredKeyShadowed bool   `json:"storedKeyShadowed"`
+	} `json:"providers"`
+}
+
+func decodeAIStatus(t *testing.T, body string) aiStatusPayload {
+	t.Helper()
+	var got aiStatusPayload
+	assert.NilError(t, json.Unmarshal([]byte(body), &got))
+	return got
+}
+
 func TestServer_AIStatus_WrongMethod(t *testing.T) {
 	base := newAITestServer(t, newFakeKeyStore(), ai.Registry{})
 	status, _ := doAIRequest(t, base, http.MethodPost, "/api/ai/status", nil)
@@ -227,6 +320,71 @@ func TestServer_AIKey_Delete_RemovesAConfiguredKey(t *testing.T) {
 	_, ok, err := store.Get(context.Background(), "anthropic")
 	assert.NilError(t, err)
 	assert.Equal(t, ok, false)
+}
+
+// TestServer_AIKey_Delete_HonestlyReportsStillConfigured_WhenEnvVarShadowsTheDeletedKey
+// is issue #7's core repro: DELETE always deletes from the store (that half
+// was never broken -- the store really does end up empty), but the response
+// used to hardcode Configured=false regardless of what was actually still in
+// effect. With VCE_AI_KEY_ANTHROPIC set, the key remains fully usable after
+// this call, and the response must say so -- exactly the "a control that
+// reports success and changes nothing" failure the issue names, now fixed by
+// reporting the true post-delete state instead of assuming one.
+func TestServer_AIKey_Delete_HonestlyReportsStillConfigured_WhenEnvVarShadowsTheDeletedKey(t *testing.T) {
+	envVar := keystore.KeyEnvVar("anthropic")
+	t.Setenv(envVar, "sk-ant-env-wins")
+	store := newFakeKeyStore()
+	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
+	base := newAITestServer(t, store, ai.Registry{"anthropic": &fakeProvider{name: "anthropic", label: "Anthropic", model: "m"}})
+
+	status, body := doAIRequest(t, base, http.MethodDelete, "/api/ai/key?provider=anthropic", nil)
+	assert.Equal(t, status, http.StatusOK)
+
+	var got struct {
+		Configured        bool   `json:"configured"`
+		Source            string `json:"source"`
+		EnvVar            string `json:"envVar"`
+		StoredKeyShadowed bool   `json:"storedKeyShadowed"`
+	}
+	assert.NilError(t, json.Unmarshal([]byte(body), &got))
+	// The store really was emptied...
+	_, stored, err := store.Get(context.Background(), "anthropic")
+	assert.NilError(t, err)
+	assert.Equal(t, stored, false)
+	// ...but the key this delete "removed" is still in effect, because the
+	// environment variable never went away, and the response must not claim
+	// otherwise.
+	assert.Equal(t, got.Configured, true)
+	assert.Equal(t, got.Source, "environment")
+	assert.Equal(t, got.EnvVar, envVar)
+	assert.Equal(t, got.StoredKeyShadowed, false, "nothing is stored any more, so it cannot still be shadowed")
+}
+
+// TestServer_AIKey_Put_ReportsShadowed_WhenEnvVarAlreadySet is PUT's half of
+// the same honesty rule: storing a key while VCE_AI_KEY_ANTHROPIC is set
+// really does write to the store (Set is never intercepted -- see
+// keystore.WithEnvOverride's doc comment), but the key just stored is not
+// the one that will be used, and the response must say so rather than
+// implying the save just took effect.
+func TestServer_AIKey_Put_ReportsShadowed_WhenEnvVarAlreadySet(t *testing.T) {
+	envVar := keystore.KeyEnvVar("anthropic")
+	t.Setenv(envVar, "sk-ant-env-wins")
+	base := newAITestServer(t, newFakeKeyStore(), ai.Registry{"anthropic": &fakeProvider{name: "anthropic", label: "Anthropic", model: "m"}})
+
+	body, err := json.Marshal(map[string]string{"provider": "anthropic", "key": aiSentinelKey})
+	assert.NilError(t, err)
+	status, respBody := doAIRequest(t, base, http.MethodPut, "/api/ai/key", body)
+	assert.Equal(t, status, http.StatusOK)
+
+	var got struct {
+		Configured        bool   `json:"configured"`
+		Source            string `json:"source"`
+		StoredKeyShadowed bool   `json:"storedKeyShadowed"`
+	}
+	assert.NilError(t, json.Unmarshal([]byte(respBody), &got))
+	assert.Equal(t, got.Configured, true)
+	assert.Equal(t, got.Source, "environment")
+	assert.Equal(t, got.StoredKeyShadowed, true)
 }
 
 func TestServer_AIKey_Delete_UnknownProvider(t *testing.T) {

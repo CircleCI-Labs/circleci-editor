@@ -61,6 +61,40 @@ type aiProviderStatusPayload struct {
 	// is what "no hardcoded model names in components" (issue #92) means in
 	// practice.
 	Model string `json:"model"`
+	// Source is keystore.KeySource ("environment", "store", or "none"):
+	// where the key in effect right now, if any, actually comes from. Added
+	// for issue #7 -- before this field existed, Configured alone could not
+	// distinguish "a key is stored" from "an environment variable is
+	// supplying one", which is exactly the distinction the pane needs to
+	// decide whether its Remove button would do anything.
+	Source string `json:"source"`
+	// EnvVar names the environment variable checked for this provider (see
+	// keystore.KeyEnvVar), populated whether or not it is actually set --
+	// the pane needs the name to explain *why* a key is shadowed, and the
+	// name is not a secret, so there is no reason to withhold it in the
+	// common case.
+	EnvVar string `json:"envVar"`
+	// StoredKeyShadowed is true exactly when a stored key exists but
+	// Source is "environment": the environment variable is currently
+	// overriding it. This is the one state in which the pane's Remove
+	// button is still a legitimate action -- there really is something in
+	// the store to delete -- but must not be presented as "the key is now
+	// gone", because EnvVar will still supply one afterwards. See issue #7.
+	StoredKeyShadowed bool `json:"storedKeyShadowed"`
+}
+
+// providerStatusPayload builds one provider's status entry from a
+// keystore.Lookup, the single source of truth both this endpoint and
+// aiKeyResponse (below) render from -- so "what /api/ai/status just said"
+// and "what PUT/DELETE /api/ai/key just said" can never disagree about the
+// same provider, which is what let issue #7 happen in the first place
+// (DELETE's response was built from nothing but the delete call's own
+// success, never from what was actually left in effect afterwards).
+func providerStatusPayload(lookup keystore.Lookup) (configured bool, source string, envVar string, storedKeyShadowed bool) {
+	return lookup.Source != keystore.SourceNone,
+		string(lookup.Source),
+		lookup.EnvVar,
+		lookup.Source == keystore.SourceEnv && lookup.Stored
 }
 
 // aiStoragePayload describes where keys are persisted, so the UI can tell a
@@ -94,20 +128,21 @@ func (s *Server) handleAIStatus(w http.ResponseWriter, r *http.Request) {
 
 	providers := make([]aiProviderStatusPayload, 0, len(s.aiProviders))
 	for _, p := range s.aiProviders.Providers() {
-		_, configured, err := s.aiStore.Get(ctx, p.Name())
-		if err != nil {
-			// A keystore read failure (e.g. a corrupt file, or a keychain
-			// tool that started misbehaving mid-session) degrades to
-			// "not configured" rather than failing the whole status
-			// request -- the rest of the app (editing, the DAG) must keep
-			// working regardless of AI-specific trouble.
-			configured = false
-		}
+		// keystore.LookupKey degrades a store read failure to Stored=false
+		// on its own (see its doc comment) -- the same "not configured"
+		// degradation this handler always had, just now computed in one
+		// place shared with the CLI's `ai status` instead of duplicated
+		// here as a bare bool.
+		lookup := keystore.LookupKey(ctx, s.aiStore, p.Name())
+		configured, source, envVar, shadowed := providerStatusPayload(lookup)
 		providers = append(providers, aiProviderStatusPayload{
-			ID:         p.Name(),
-			Label:      p.Label(),
-			Configured: configured,
-			Model:      p.DefaultModel(),
+			ID:                p.Name(),
+			Label:             p.Label(),
+			Configured:        configured,
+			Model:             p.DefaultModel(),
+			Source:            source,
+			EnvVar:            envVar,
+			StoredKeyShadowed: shadowed,
 		})
 	}
 
@@ -129,10 +164,21 @@ type aiKeyPutRequest struct {
 // aiKeyResponse is returned by both PUT and DELETE /api/ai/key. It never
 // contains the key itself -- only whether one is now configured -- by
 // construction: there is no field here capable of holding it.
+//
+// Source/EnvVar/StoredKeyShadowed exist for the same reason they were added
+// to aiProviderStatusPayload (issue #7): Configured alone cannot tell the
+// pane whether the DELETE it just sent actually changed anything. Before
+// this, DELETE unconditionally reported Configured=false -- true of the
+// store, but not of what is in effect when an environment variable is
+// shadowing it, which is precisely how a "Remove" click could report
+// success while a key stayed usable.
 type aiKeyResponse struct {
-	Provider   string           `json:"provider"`
-	Configured bool             `json:"configured"`
-	Storage    aiStoragePayload `json:"storage"`
+	Provider          string           `json:"provider"`
+	Configured        bool             `json:"configured"`
+	Storage           aiStoragePayload `json:"storage"`
+	Source            string           `json:"source"`
+	EnvVar            string           `json:"envVar"`
+	StoredKeyShadowed bool             `json:"storedKeyShadowed"`
 }
 
 // handleAIKey serves PUT and DELETE /api/ai/key: storing or removing one
@@ -181,10 +227,20 @@ func (s *Server) handleAIKeyPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read back through LookupKey rather than assuming Configured=true: if
+	// VCE_AI_KEY_<PROVIDER> is already set, the key that was just stored is
+	// shadowed from the moment it lands, and the response must say so
+	// instead of implying it is now the key in effect (see aiKeyResponse's
+	// doc comment).
+	lookup := keystore.LookupKey(ctx, s.aiStore, req.Provider)
+	configured, source, envVar, shadowed := providerStatusPayload(lookup)
 	writeJSON(w, http.StatusOK, aiKeyResponse{
-		Provider:   req.Provider,
-		Configured: true,
-		Storage:    aiStoragePayload{Backend: string(s.aiStore.Backend()), Location: s.aiStore.Location()},
+		Provider:          req.Provider,
+		Configured:        configured,
+		Storage:           aiStoragePayload{Backend: string(s.aiStore.Backend()), Location: s.aiStore.Location()},
+		Source:            source,
+		EnvVar:            envVar,
+		StoredKeyShadowed: shadowed,
 	})
 }
 
@@ -207,10 +263,21 @@ func (s *Server) handleAIKeyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// This is issue #7's actual fix: Configured used to be hardcoded false
+	// here, which is only true of the store this call just emptied. Reading
+	// back through LookupKey reports what a key is genuinely still in
+	// effect for -- an environment variable does not stop existing because
+	// this process deleted a file or a keychain entry -- so a "Remove"
+	// click can no longer claim an effect it did not have.
+	lookup := keystore.LookupKey(ctx, s.aiStore, provider)
+	configured, source, envVar, shadowed := providerStatusPayload(lookup)
 	writeJSON(w, http.StatusOK, aiKeyResponse{
-		Provider:   provider,
-		Configured: false,
-		Storage:    aiStoragePayload{Backend: string(s.aiStore.Backend()), Location: s.aiStore.Location()},
+		Provider:          provider,
+		Configured:        configured,
+		Storage:           aiStoragePayload{Backend: string(s.aiStore.Backend()), Location: s.aiStore.Location()},
+		Source:            source,
+		EnvVar:            envVar,
+		StoredKeyShadowed: shadowed,
 	})
 }
 
