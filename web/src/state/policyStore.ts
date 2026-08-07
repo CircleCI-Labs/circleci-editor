@@ -108,6 +108,18 @@ export interface PolicyDecision {
   policyContext?: string;
   /** The `data.meta` keys the host could supply. Empty is meaningful -- see `PolicyDecisionResponse`. */
   metadataSent: string[];
+  /**
+   * Whether this decision was made against `input._compiled_` too, or
+   * against the source alone (issue #25) -- see
+   * `PolicyDecisionResponse.compiledConfigIncluded`. `false` is the safe
+   * default `toDecision` falls back to when a response omits this field: a
+   * caller that cannot tell must assume the more cautious answer, not
+   * silently credit a check with a stronger guarantee than it can prove it
+   * made.
+   */
+  compiledConfigIncluded: boolean;
+  /** Why the compiled config was left out. Set only when `compiledConfigIncluded` is false. */
+  compiledConfigReason?: string;
 }
 
 export interface PolicyViolation {
@@ -263,6 +275,8 @@ export function toDecision(
     orgSlug: response.orgSlug,
     policyContext: response.policyContext,
     metadataSent: response.metadataSent ?? [],
+    compiledConfigIncluded: response.compiledConfigIncluded ?? false,
+    compiledConfigReason: response.compiledConfigReason,
   };
 }
 

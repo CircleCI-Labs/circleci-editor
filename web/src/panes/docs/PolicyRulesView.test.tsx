@@ -40,6 +40,9 @@ function decision(overrides: Partial<PolicyDecision> = {}): PolicyDecision {
     orgSlug: 'gh/acme',
     policyContext: 'config',
     metadataSent: [],
+    // Steady state unless a test is specifically about issue #25's notice --
+    // see the describe block below.
+    compiledConfigIncluded: true,
     ...overrides,
   };
 }
@@ -79,6 +82,31 @@ describe('PolicyRulesView', () => {
     // being omitted -- "these were applied" is the actionable part.
     expect(screen.getByText('check_orb_version')).toBeInTheDocument();
     expect(screen.getByText('Did not fire')).toBeInTheDocument();
+  });
+
+  it('says nothing extra when the compiled config was included (issue #25)', () => {
+    usePolicyStore.setState({
+      state: 'decided',
+      decision: decision({ compiledConfigIncluded: true }),
+      checkedText: CONFIG,
+    });
+    render(<PolicyRulesView />);
+    expect(screen.queryByTestId('policy-compiled-unavailable')).toBeNull();
+  });
+
+  it('discloses a source-only check, and why, rather than letting a silent rule imply it (issue #25)', () => {
+    usePolicyStore.setState({
+      state: 'decided',
+      decision: decision({
+        compiledConfigIncluded: false,
+        compiledConfigReason: 'this config did not compile',
+      }),
+      checkedText: CONFIG,
+    });
+    render(<PolicyRulesView />);
+    const notice = screen.getByTestId('policy-compiled-unavailable');
+    expect(notice).toHaveTextContent(/evaluated the source config only/i);
+    expect(notice).toHaveTextContent('this config did not compile');
   });
 
   it('says an empty rule list means nothing was checked', () => {

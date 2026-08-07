@@ -405,6 +405,14 @@ export interface PolicyViolationItem {
  *
  * The last two are both "we could not check". Rendering either as "no
  * violations" is the one failure this feature exists to avoid.
+ *
+ * Orthogonal to all three: `available: true` still splits into "checked
+ * against source plus the compiled config" and "checked against source
+ * only" (`compiledConfigIncluded`, issue #25). Both are real decisions --
+ * neither is "we could not check" -- but only the first is the document
+ * CircleCI itself evaluates at pipeline-trigger time, so a `PASS` with
+ * `compiledConfigIncluded: false` is not the same statement as a `PASS`
+ * with it `true`.
  */
 export interface PolicyDecisionResponse {
   available: boolean;
@@ -430,6 +438,18 @@ export interface PolicyDecisionResponse {
    * would be silent on CircleCI. The UI says so.
    */
   metadataSent?: string[];
+  /**
+   * Whether `status` above was decided against the same document CircleCI
+   * itself evaluates at pipeline-trigger time -- source plus a `_compiled_`
+   * key holding the config after 2.1->2.0 compilation (issue #25) -- or
+   * against the source alone. `false` means a rule written against
+   * `input._compiled_` may not have fired here even though it would on
+   * CircleCI, which is a fact about *this check*, not about the config, and
+   * must be shown alongside the verdict rather than left to a log line.
+   */
+  compiledConfigIncluded?: boolean;
+  /** Why the compiled config was left out. Set only when `compiledConfigIncluded` is false. */
+  compiledConfigReason?: string;
 }
 
 /**

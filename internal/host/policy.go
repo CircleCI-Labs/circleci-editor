@@ -33,10 +33,14 @@ import (
 	"github.com/CircleCI-Labs/circleci-editor/internal/circleci"
 )
 
-// policyDecisionTimeout bounds one POST /api/policy/decide, covering both
-// upstream calls it can make (resolving the org slug to a UUID, then the
-// decision itself) including the circleci client's retries.
-const policyDecisionTimeout = 25 * time.Second
+// policyDecisionTimeout bounds one POST /api/policy/decide, covering every
+// upstream call it can make -- resolving the org slug to a UUID, compiling
+// the config for the "_compiled_" key (issue #25), and the decision itself
+// -- including the circleci client's own retries on each. Compiling can be
+// the slowest of the three (see validateTimeout, which bounds it alone at
+// 20s for /api/validate), so this is sized with headroom above a simple sum
+// of the individual timeouts rather than matching one of them.
+const policyDecisionTimeout = 45 * time.Second
 
 // policyRequest is the JSON shape accepted by POST /api/policy/decide.
 type policyRequest struct {
@@ -107,6 +111,23 @@ type policyResponse struct {
 	// branch does not fire without them, so its silence here is not
 	// evidence that it would be silent on CircleCI.
 	MetadataSent []string `json:"metadataSent,omitempty"`
+
+	// CompiledConfigIncluded reports whether the decision above was made
+	// against the same document CircleCI itself evaluates at
+	// pipeline-trigger time -- source plus a "_compiled_" key holding the
+	// config after 2.1->2.0 compilation (issue #25) -- or against the
+	// source alone. Deliberately not `omitempty`: `false` is exactly the
+	// case this field exists to report, and it must be sent as loudly as
+	// `true` rather than being indistinguishable from a client that never
+	// asked. A rule written against `input._compiled_` may not have fired
+	// when this is false, even though Status above is a real verdict.
+	CompiledConfigIncluded bool `json:"compiledConfigIncluded"`
+
+	// CompiledConfigReason says why the compiled form was left out --
+	// compilation failed, the config does not compile, or the two
+	// documents could not be merged. Populated only when
+	// CompiledConfigIncluded is false.
+	CompiledConfigReason string `json:"compiledConfigReason,omitempty"`
 }
 
 // policyOwnerResolver caches the one mapping this endpoint needs that cannot
@@ -150,10 +171,24 @@ func (r *policyOwnerResolver) put(slug, id string) {
 // none of them, and policyDecider names no method that could.
 //
 // This is the one place in this program that sends config contents to
-// CircleCI for anything other than compilation. That is stated in the UI
-// (PolicyStrip) and in this editor's own docs page ("What leaves your
-// machine" in internal/guides/editor/using-this-editor.adoc), and the check
-// only runs when the user asks for it — never on a keystroke.
+// CircleCI for anything other than compilation -- and, since issue #25,
+// it compiles the config too, for the same reason /api/validate does and
+// disclosed the same way: not a new outbound flow, the same one this
+// editor's own docs page already names ("What leaves your machine" in
+// internal/guides/editor/using-this-editor.adoc). That is stated in the UI
+// (PolicyStrip) too, and the check only runs when the user asks for it —
+// never on a keystroke.
+//
+// The compile step exists so the decision endpoint can be asked with the
+// same document CircleCI itself asks its policies with: source config plus
+// a "_compiled_" key holding the config after 2.1->2.0 compilation. Before
+// issue #25 this handler sent the source alone, which is exactly wrong for
+// a policy written against `input._compiled_` -- the key is simply absent
+// rather than failing, so such a policy could PASS here and HARD_FAIL for
+// real. Compilation failing, or the config not compiling, degrades this
+// check to source-only rather than cancelling it, and CompiledConfigReason
+// says so -- see policyResponse.CompiledConfigIncluded's own doc comment
+// for why that degradation must never be silent.
 func (s *Server) handlePolicyDecide(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -204,10 +239,18 @@ func (s *Server) handlePolicyDecide(w http.ResponseWriter, r *http.Request) {
 
 	metadata, metadataSent := s.policyMetadata()
 
+	// Compiled in this project's own org context, the same as the decision
+	// itself is about to be: private orbs and org-scoped contexts resolve
+	// the same way here as they would if this config were actually
+	// triggered, rather than compiling "as if anonymous" the way
+	// /api/validate must (it runs before an org is known at all -- see its
+	// own OwnerID comment).
+	configForDecision, compiledIncluded, compiledUnavailableReason := s.buildPolicyInput(ctx, *req.Contents, ownerID)
+
 	decision, err := s.policyClient.DecidePolicy(ctx, circleci.PolicyDecisionRequest{
 		OwnerID:       ownerID,
 		PolicyContext: circleci.DefaultPolicyContext,
-		ConfigYAML:    *req.Contents,
+		ConfigYAML:    configForDecision,
 		Metadata:      metadata,
 	})
 	if err != nil {
@@ -248,17 +291,57 @@ func (s *Server) handlePolicyDecide(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, policyResponse{
-		Available:      true,
-		Source:         "api",
-		Status:         string(decision.Status),
-		EnabledRules:   decision.EnabledRules,
-		HardFailures:   toPolicyViolationItems(decision.HardFailures),
-		SoftFailures:   toPolicyViolationItems(decision.SoftFailures),
-		DecisionReason: decision.Reason,
-		OrgSlug:        orgSlug,
-		PolicyContext:  circleci.DefaultPolicyContext,
-		MetadataSent:   metadataSent,
+		Available:              true,
+		Source:                 "api",
+		Status:                 string(decision.Status),
+		EnabledRules:           decision.EnabledRules,
+		HardFailures:           toPolicyViolationItems(decision.HardFailures),
+		SoftFailures:           toPolicyViolationItems(decision.SoftFailures),
+		DecisionReason:         decision.Reason,
+		OrgSlug:                orgSlug,
+		PolicyContext:          circleci.DefaultPolicyContext,
+		MetadataSent:           metadataSent,
+		CompiledConfigIncluded: compiledIncluded,
+		CompiledConfigReason:   compiledUnavailableReason,
 	})
+}
+
+// buildPolicyInput compiles contents in ownerID's org context and, when that
+// succeeds, merges the result into contents under a "_compiled_" key via
+// circleci.MergePolicyInput -- the document to send as the decision
+// endpoint's `input`, matching what CircleCI's own evaluator sees at
+// pipeline-trigger time (issue #25).
+//
+// Never fails outright: a config that cannot be compiled, does not compile,
+// or (surprisingly) cannot be merged after compiling successfully all
+// degrade to returning contents unchanged, with a reason explaining which.
+// A policy check that could not include the compiled form is still a policy
+// check -- CompiledConfigReason's own doc comment is why silently returning
+// the source-only document is exactly what this must not do.
+func (s *Server) buildPolicyInput(ctx context.Context, contents, ownerID string) (input string, compiledIncluded bool, reason string) {
+	result, err := s.compiler.CompileConfig(ctx, circleci.CompileRequest{
+		ConfigYAML: contents,
+		OwnerID:    ownerID,
+	})
+	if err != nil {
+		logPolicyUpstreamFailure("compile this config for the policy check's _compiled_ input", err)
+		return contents, false, "this config could not be compiled (" + describeUpstreamError(err) + ")"
+	}
+	if !result.Valid {
+		return contents, false, "this config did not compile, so there is no compiled form to include"
+	}
+
+	merged, err := circleci.MergePolicyInput(contents, result.OutputYAML)
+	if err != nil {
+		// Compiling a config CircleCI itself just called valid should never
+		// leave either document unparseable to this host's own YAML
+		// decoder -- if it somehow does, that is a fact worth a log line,
+		// not a reason to fail the whole check.
+		//nolint:gosec // G706: the interpolated value passes through sanitizeForLog, which replaces every control character (newlines included) and bounds the length, so it cannot forge a log line; gosec's taint analysis does not recognise the sanitizer. Same false positive logPolicyUpstreamFailure already carries a nolint for.
+		log.Printf("policy: could not merge compiled config into policy input: %s", sanitizeForLog(err.Error()))
+		return contents, false, "the compiled config could not be merged into the policy input"
+	}
+	return merged, true, ""
 }
 
 // policyOwnerOutcome is why resolving the organization UUID did or did not

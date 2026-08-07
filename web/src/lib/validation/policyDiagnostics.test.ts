@@ -53,6 +53,10 @@ function decision(overrides: Partial<PolicyDecision> = {}): PolicyDecision {
     hardFailures: [],
     softFailures: [],
     metadataSent: [],
+    // Issue #25 is orthogonal to what this suite pins (diagnostic
+    // placement, not the input the decision was made against), so this
+    // stays at the steady state unless a specific test overrides it.
+    compiledConfigIncluded: true,
     ...overrides,
   };
 }

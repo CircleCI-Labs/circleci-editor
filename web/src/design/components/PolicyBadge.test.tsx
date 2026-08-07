@@ -16,6 +16,9 @@ function decision(overrides: Partial<PolicyDecision> = {}): PolicyDecision {
     orgSlug: 'gh/acme',
     policyContext: 'config',
     metadataSent: [],
+    // Steady state unless a test is specifically about issue #25's caveat --
+    // see the 'compiledConfigIncluded' describe block below.
+    compiledConfigIncluded: true,
     ...overrides,
   };
 }
@@ -258,6 +261,59 @@ describe('PolicyBadge', () => {
       );
       expect(view.label).toBe('Policy: unchecked');
       expect(view.tooltip).toMatch(/doesn't parse as YAML/i);
+    });
+
+    describe('issue #25: a decision made against the source alone says so', () => {
+      it('adds the caveat to a PASS, without changing its label or tone', () => {
+        const included = describePolicyBadge(
+          'decided',
+          decision({ status: 'PASS', compiledConfigIncluded: true }),
+          false,
+          null,
+          false,
+        );
+        const sourceOnly = describePolicyBadge(
+          'decided',
+          decision({
+            status: 'PASS',
+            compiledConfigIncluded: false,
+            compiledConfigReason: 'this config did not compile',
+          }),
+          false,
+          null,
+          false,
+        );
+
+        // The verdict itself -- label, tone -- must not change: a false
+        // PASS is not fixed by relabelling it, only by disclosing what it
+        // did not check.
+        expect(sourceOnly.label).toBe(included.label);
+        expect(sourceOnly.tone).toBe(included.tone);
+        expect(sourceOnly.tooltip).toMatch(/evaluated the source config only/i);
+        expect(sourceOnly.tooltip).toMatch(/this config did not compile/);
+        expect(included.tooltip).not.toMatch(
+          /evaluated the source config only/i,
+        );
+      });
+
+      it('adds the same caveat to a HARD_FAIL', () => {
+        const view = describePolicyBadge(
+          'decided',
+          decision({
+            status: 'HARD_FAIL',
+            hardFailures: [{ rule: 'r', reason: 'blocked', kind: 'hard' }],
+            compiledConfigIncluded: false,
+          }),
+          false,
+          null,
+          false,
+        );
+        expect(view.label).toBe('Policy hard fail');
+        expect(view.tooltip).toMatch(/evaluated the source config only/i);
+        expect(view.tooltip).toMatch(
+          /rule written against.*may not have fired/i,
+        );
+      });
     });
   });
 });

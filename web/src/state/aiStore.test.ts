@@ -511,6 +511,7 @@ describe('aiStore', () => {
           ],
           softFailures: [],
           metadataSent: [],
+          compiledConfigIncluded: true,
         },
         checkedText: FIXTURE_CONFIG,
       });
@@ -540,6 +541,7 @@ describe('aiStore', () => {
           hardFailures: [{ rule: 'r', reason: 'blocked', kind: 'hard' }],
           softFailures: [],
           metadataSent: [],
+          compiledConfigIncluded: true,
         },
         // Checked against different text than what's open now.
         checkedText: `${FIXTURE_CONFIG}# edited\n`,

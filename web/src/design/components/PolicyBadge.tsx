@@ -43,6 +43,15 @@
  * here rather than being trimmed for space: `describePolicyBadge`'s cases
  * below are the same states, and `PolicyBadge.test.tsx` pins every one of
  * them.
+ *
+ * Issue #25 adds a fourth: a real decision can still be *the wrong one to
+ * trust*, if it was made against the source config alone rather than the
+ * source-plus-compiled document CircleCI itself evaluates at
+ * pipeline-trigger time. That is not a fifth state -- `decided` still
+ * covers it -- but it changes what "decided" is allowed to promise, so
+ * `describeDecidedPolicyBadge` below appends the caveat to whichever of
+ * the four verdicts it is, rather than adding a state that could be
+ * mistaken for "no decision".
  */
 import { useMemo } from 'react';
 
@@ -127,6 +136,24 @@ export function describePolicyBadge(
     };
   }
 
+  const view = describeDecidedPolicyBadge(decision);
+  // Issue #25: a decision made against the source alone cannot rule out a
+  // rule that only fires against `input._compiled_` -- true of every
+  // status above, PASS included, so the caveat is appended once here
+  // rather than duplicated into all four tooltips above.
+  if (decision.compiledConfigIncluded) return view;
+  return {
+    ...view,
+    tooltip:
+      `${view.tooltip} This check evaluated the source config only` +
+      `${decision.compiledConfigReason ? `: ${decision.compiledConfigReason}` : ''}. ` +
+      `CircleCI's own pipeline-trigger evaluation also inspects the config after 2.1→2.0 compilation, so a rule ` +
+      `written against that may not have fired here even though it would on CircleCI.`,
+  };
+}
+
+/** The verdict-specific half of `describePolicyBadge`'s `decided` case, split out so the issue #25 caveat above can be appended to any of the four without repeating itself in each. */
+function describeDecidedPolicyBadge(decision: PolicyDecision): PolicyBadgeView {
   switch (decision.status) {
     case 'PASS':
       return hasEnabledRules(decision)
