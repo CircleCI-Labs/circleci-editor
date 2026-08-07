@@ -259,7 +259,13 @@ workflows:
   it("locates the warning at the misspelled key's own line", () => {
     const { doc } = parseConfig(TYPO);
     const [diagnostic] = topLevelKeyDiagnostics(doc, TYPO);
-    expect(diagnostic?.location).toEqual({
+    // Asserts the fields this test is about rather than deep-equalling the
+    // whole location: `DiagnosticLocation` also carries the optional
+    // `endLine`/`endColumn` the inline underlines need, and a whole-object
+    // comparison here failed the moment those were added -- an
+    // over-specified assertion breaking on a change that could not affect
+    // what this test checks.
+    expect(diagnostic?.location).toMatchObject({
       line: 2,
       column: 1,
       basis: 'resolved',
