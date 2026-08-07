@@ -228,6 +228,49 @@ workflows:
   });
 });
 
+// Issue #5: `workflow:` compiles `valid: true` on the live API (see this
+// change's PR description for the transcript), so this is the one case in
+// the whole suite where `state: 'valid'` and a non-empty diagnostics list
+// are both true at once. That combination has to read, unmistakably, as
+// "this editor is unsure", never as "CircleCI is unsure" -- a red compiler
+// badge and an amber local one look nothing alike on purpose.
+describe("DiagnosticsStrip: issue #5's top-level near-miss warning", () => {
+  const TYPO_CONFIG = `version: 2.1
+workflow:
+  main:
+    jobs:
+      - build
+jobs:
+  build:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+`;
+
+  it('shows the warning even though the compiler itself said valid, labelled as a local check', () => {
+    seedStores({ text: TYPO_CONFIG });
+    const { result } = renderStrip([], { state: 'valid', errors: [] });
+    expect(result.state).toBe('valid');
+    expect(screen.getByText('Local check')).toBeInTheDocument();
+    expect(screen.queryByText('CircleCI compiler')).not.toBeInTheDocument();
+    expect(screen.getByTestId('diagnostics-count')).toHaveTextContent(
+      '1 warning',
+    );
+    expect(screen.getByTestId('diagnostic-title')).toHaveTextContent(
+      '"workflow"',
+    );
+  });
+
+  it('offers the same rename affordance a compiler-caught key typo gets', () => {
+    seedStores({ text: TYPO_CONFIG });
+    renderStrip([], { state: 'valid', errors: [] });
+    expect(
+      screen.getByRole('button', { name: 'Rename "workflow" to "workflows"' }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe('DiagnosticsStrip: suggestions', () => {
   it('offers the mechanically justified fix, with its rationale', () => {
     seedStores();

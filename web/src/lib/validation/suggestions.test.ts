@@ -14,6 +14,7 @@ import {
   UNKNOWN_REQUIRES,
   UNKNOWN_WORKFLOW_JOB,
 } from './apiFixtures';
+import { topLevelKeyDiagnostics } from './build';
 import { groupCompileErrors, type Diagnostic } from './diagnostics';
 import {
   editDistance,
@@ -172,6 +173,72 @@ jobs:
       - checkout
 `;
     expect(suggest(SCHEMA_EXTRANEOUS_KEY, collides)).toEqual([]);
+  });
+});
+
+// Issue #5: the top-level near-miss check has no compiler report to read a
+// permitted-keys list from -- there is no compiler report at all, since
+// CircleCI doesn't flag this -- so this exercises `suggestionsFor` against
+// the actual `local`-sourced diagnostic `topLevelKeyDiagnostics` builds,
+// rather than `diagnosticFrom`'s compiler-message fixtures.
+describe('suggestions offered: an unrecognised top-level key (issue #5)', () => {
+  const config = `version: 2.1
+workflow:
+  main:
+    jobs:
+      - build
+jobs:
+  build:
+    steps:
+      - checkout
+`;
+
+  function suggestForTopLevelKey(text: string): Suggestion[] {
+    const { doc } = parseConfig(text);
+    const [diagnostic] = topLevelKeyDiagnostics(doc, text);
+    if (!diagnostic) throw new Error('expected a top-level-key diagnostic');
+    return suggestionsFor(diagnostic, doc);
+  }
+
+  it("offers exactly one rename, to the only known top-level key within a typo's distance", () => {
+    const suggestions = suggestForTopLevelKey(config);
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]?.label).toBe('Rename "workflow" to "workflows"');
+  });
+
+  it("says plainly this is this editor's own guess, not something CircleCI confirmed", () => {
+    // The one place this suggestion's honesty could quietly slip: reusing
+    // `suggestForExtraneousKey`'s "CircleCI listed the keys permitted here"
+    // wording would be false here -- there is no compiler report at all.
+    const rationale = suggestForTopLevelKey(config)[0]?.rationale;
+    expect(rationale).toContain("this editor's own suspicion");
+    expect(rationale).not.toContain('CircleCI listed');
+  });
+
+  it('applies as a surgical rename, leaving the rest of the document untouched', () => {
+    const suggestion = suggestForTopLevelKey(config)[0];
+    expect(suggestion).toBeDefined();
+    const after = applyLikeStore(config, suggestion as Suggestion);
+    expect(after).toContain('workflows:\n  main:');
+    expect(after).not.toContain('\nworkflow:\n');
+  });
+
+  it('declines when the target key has already been fixed elsewhere, since the rename would collide', () => {
+    const collides = `version: 2.1
+workflow:
+  main:
+    jobs:
+      - build
+workflows:
+  main:
+    jobs:
+      - build
+jobs:
+  build:
+    steps:
+      - checkout
+`;
+    expect(suggestForTopLevelKey(collides)).toEqual([]);
   });
 });
 
