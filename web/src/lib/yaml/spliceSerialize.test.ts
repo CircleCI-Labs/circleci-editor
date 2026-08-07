@@ -297,22 +297,61 @@ jobs:
     expect(deletions).toBe(1);
   });
 
-  it('splices rather than falling back -- the result differs from naive toString()', () => {
-    // The distinguishing evidence that the splice path actually ran: a
-    // trailing comment on a key whose value is a block collection stays on
-    // its own line under `toString()` but keeps its original bytes under the
-    // splice (verified against yaml@2.9). If this ever silently reverts to
-    // the fallback, the two become byte-identical and this fails.
-    const { doc: oldDoc } = parseConfig(LEADING);
+  it('splices rather than falling back -- aligned padding toString() would collapse', () => {
+    // The distinguishing evidence that the splice path actually ran has to be
+    // something only the splice can produce. It used to be "the two outputs
+    // differ" for the LEADING fixture above, which passed for the wrong
+    // reason: what differed was that the splice emitted the sequence item at
+    // twelve columns instead of six. That is still valid, semantically
+    // identical YAML, so the safety net accepted it and the test read a
+    // mis-indentation as proof of success. Fixing the indentation made the two
+    // outputs agree and this assertion fail -- a test that only ever passed
+    // because of the bug it happened to be standing next to.
+    //
+    // Column-aligned trailing comments are proper evidence: `toString()` emits
+    // exactly one space before a comment, so multi-space padding surviving can
+    // only have come from the original bytes.
+    const before = `version: 2.1
+
+jobs:
+  build:
+    docker:
+      - image: cimg/base:2024.12     # aligned deliberately
+    resource_class: large            # and this one
+    steps:
+      - checkout
+`;
+    const { doc: oldDoc } = parseConfig(before);
     if (!oldDoc) throw new Error('fixture failed to parse');
     const newDoc = cloneDocument(oldDoc);
-    setIn(newDoc, ['jobs', 'build', 'docker', 0, 'image'], 'cimg/base:2025.01');
+    setIn(newDoc, ['jobs', 'build', 'resource_class'], 'medium');
 
-    const spliced = serializeMinimalDiff(LEADING, oldDoc, newDoc);
+    const spliced = serializeMinimalDiff(before, oldDoc, newDoc);
     expect(spliced).not.toBe(newDoc.toString());
-    expect(newDoc.toString().startsWith('# Widgets service pipeline.')).toBe(
-      true,
+    expect(spliced).toContain(
+      '- image: cimg/base:2024.12     # aligned deliberately',
     );
+    expect(newDoc.toString()).toContain(
+      '- image: cimg/base:2024.12 # aligned deliberately',
+    );
+  });
+
+  it('keeps a sequence item at its own indentation when a sibling key changes', () => {
+    // Pins the bug the assertion above used to be resting on: the item must
+    // come back at the column it was written at, not at the parent's indent
+    // plus a guess.
+    const before = `jobs:
+  build:
+    docker:
+      - image: cimg/base:2024.12
+    steps:
+      - checkout
+`;
+    const after = mutate(before, (doc) => {
+      setIn(doc, ['jobs', 'build', 'docker', 0, 'image'], 'cimg/base:2025.01');
+    });
+    expect(after).toContain('\n      - image: cimg/base:2025.01\n');
+    expect(changedLineNumbers(before, after)).toEqual([4]);
   });
 
   it('keeps a leading comment on a delete that removes the first job entirely', () => {
@@ -423,22 +462,91 @@ jobs:
     expect(after).toContain('        other: k');
   });
 
-  it('KNOWN GAP: editing inside a sequence item still re-renders that item', () => {
-    // Documented rather than fixed, so the boundary of the two fixes above is
-    // explicit instead of being rediscovered.
-    //
-    // renderSeqChildren diffs items by deep equality and has no "recurse into
-    // a changed item" path, so a modified item is a remove plus an add and is
-    // rendered from scratch -- which collapses aligned comment padding inside
-    // it. Adding recursion needs a way to decide that two sequence items are
-    // "the same item, modified", and sequence items have no keys to match on,
-    // so that is a design question and not a patch. Pre-existing: this output
-    // is byte-identical with and without the fixes in this change.
-    const src = `jobs:\n  build:\n    docker:\n      - image: cimg/go:1.26     # pinned\n        auth: x\n`;
+  it('editing inside a sequence item keeps the rest of that item verbatim', () => {
+    // This was the documented gap #41 recorded: renderSeqChildren diffed items
+    // by deep equality with no path into a *changed* one, so an edit anywhere
+    // inside an item re-rendered the whole item and collapsed the alignment in
+    // it. It now recurses, pairing a removed item with an added one of the same
+    // container kind -- a heuristic, because sequence items have no keys to
+    // match on, and a safe one: the pair is only used to reuse bytes for
+    // subtrees that compare equal, so a wrong guess reuses fewer bytes rather
+    // than producing a different document.
+    const src = `jobs:
+  build:
+    docker:
+      - image: cimg/go:1.26     # pinned
+        auth: x
+      - image: cimg/redis:7.0   # service
+`;
     const after = mutate(src, (doc) => {
       setIn(doc, ['jobs', 'build', 'docker', 0, 'auth'], 'y');
     });
-    expect(after).toContain('- image: cimg/go:1.26 # pinned');
-    expect(after).not.toContain('cimg/go:1.26     # pinned');
+    expect(after).toContain('- image: cimg/go:1.26     # pinned');
+    expect(after).toContain('- image: cimg/redis:7.0   # service');
+    expect(changedLineNumbers(src, after)).toEqual([5]);
+  });
+
+  it('reordering a step is a pure move, in either direction', () => {
+    // Found while fixing the above, and worse than the gap it was found next
+    // to: moveSeqItem -- the reorder the inspector performs -- reflowed every
+    // comment in the file. An item's own range starts *past* its `- ` marker,
+    // so a moved item was spliced without its dash or indentation, landing at
+    // column zero; that is a different document, so the safety net re-emitted
+    // the whole file.
+    //
+    // Moves toward the back happened to work, which is why this went unnoticed:
+    // diffArrays reports a move toward the front as the addition *before* the
+    // removal, so the orphan pool was still empty when the new position asked
+    // for it. Both directions are asserted for that reason.
+    const src = `jobs:
+  build:
+    steps:
+      - checkout                # first
+      - run: go build ./...     # second
+      - run: go test ./...      # third
+`;
+    for (const [from, to] of [
+      [2, 0],
+      [0, 2],
+      [1, 2],
+      [2, 1],
+    ] as const) {
+      const after = mutate(src, (doc) => {
+        moveSeqItem(doc, ['jobs', 'build', 'steps'], from, to);
+      });
+      expect(after, `move ${from} -> ${to}`).toContain(
+        '- checkout                # first',
+      );
+      expect(after, `move ${from} -> ${to}`).toContain(
+        '- run: go build ./...     # second',
+      );
+      expect(after, `move ${from} -> ${to}`).toContain(
+        '- run: go test ./...      # third',
+      );
+    }
+  });
+
+  it('does not recurse into an item whose own leading comment would be lost', () => {
+    // The recursion splices an item's own bytes, and an item's leading comment
+    // sits before the dash, outside its range -- so recursing there would drop
+    // the comment. It falls back to a fresh render instead: the alignment
+    // inside that one item is the lesser loss, and the comment above it
+    // survives. Pins the case that caught this, a comment above a renamed
+    // workflow entry.
+    const src = `workflows:
+  main:
+    jobs:
+      - build
+      # test gates the deploy
+      - test:
+          requires:
+            - build
+`;
+    const after = mutate(src, (doc) => {
+      const jobs: any = doc.getIn(['workflows', 'main', 'jobs']);
+      jobs.items[1].items[0].key.value = 'unit';
+    });
+    expect(after).toContain('# test gates the deploy');
+    expect(after).toContain('- unit:');
   });
 });
