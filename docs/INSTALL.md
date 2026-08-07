@@ -94,7 +94,7 @@ on Windows, use Method 3 (download a release archive) instead.
 > this way now exits immediately with an error explaining exactly what's
 > missing and how to fix it (build from source, or use a release archive),
 > rather than opening a browser tab to something broken. Tracked in
-> [issue #25](https://github.com/CircleCI-Labs/circleci-editor/issues/25).
+> [issue #37](https://github.com/CircleCI-Labs/circleci-editor/issues/37).
 >
 > ```console
 > $ circleci-editor
