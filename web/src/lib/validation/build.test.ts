@@ -281,6 +281,11 @@ describe('buildDiagnostics: locations', () => {
       line: 5,
       column: 5,
       basis: 'resolved',
+      // Issue #9: `endColumn` is the offending key's own width ("stpes" is
+      // 5 characters), not the rest of the line -- the inline squiggle
+      // underlines just the key, not everything after it.
+      endLine: 5,
+      endColumn: 10,
     });
   });
 

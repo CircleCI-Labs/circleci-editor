@@ -35,14 +35,51 @@ export function offsetToPosition(
   return { line, column: clamped - lastBreak };
 }
 
+/** The offset of the end of the line `from` sits on -- the newline itself, or EOF if there is none. */
+function endOfLine(text: string, from: number): number {
+  const nl = text.indexOf('\n', from);
+  return nl === -1 ? text.length : nl;
+}
+
 function locateNode(
   text: string,
   node: Node | undefined,
 ): DiagnosticLocation | undefined {
   const start = node?.range?.[0];
-  if (start === undefined) return undefined;
+  // Narrowing on `start` alone doesn't tell TS `node` itself is defined
+  // (optional chaining doesn't propagate that far), so `node` is re-checked
+  // explicitly rather than accessed again through `?.` below.
+  if (node === undefined || start === undefined) return undefined;
   const { line, column } = offsetToPosition(text, start);
-  return { line, column, basis: 'resolved' };
+
+  // `range[1]` is the end of the node's own content -- exactly the width
+  // issue #9's underline needs, and not (per the `yaml` package's docs)
+  // padded with the trailing whitespace/newline that `range[2]` includes.
+  const end = node.range?.[1];
+  if (end === undefined || end <= start)
+    return { line, column, basis: 'resolved' };
+
+  const endPosition = offsetToPosition(text, end);
+  if (endPosition.line === line) {
+    return {
+      line,
+      column,
+      basis: 'resolved',
+      endLine: line,
+      endColumn: endPosition.column,
+    };
+  }
+  // The node's range crosses a line break -- see `DiagnosticLocation.endLine`'s
+  // own comment for why this clips to the start line rather than carrying the
+  // real, multi-line end through.
+  const clipped = offsetToPosition(text, endOfLine(text, start));
+  return {
+    line,
+    column,
+    basis: 'resolved',
+    endLine: line,
+    endColumn: clipped.column,
+  };
 }
 
 /** The key node of `key` within the map at `path`, which is what an `extraneous key` finding is actually about. */

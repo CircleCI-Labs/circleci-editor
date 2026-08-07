@@ -105,6 +105,27 @@ export interface DiagnosticLocation {
   column: number;
   /** See this module's doc comment: how we came to believe this location. Never invented. */
   basis: 'reported' | 'resolved';
+  /**
+   * The exclusive end of the span, 1-based like `line`/`column`, added for
+   * issue #9's inline underline (a squiggle needs a width, not just a
+   * point). Additive on purpose -- every existing consumer of `location`
+   * (`LocationButton`'s jump-to-line, `diagnosticLines.ts`'s whole-line
+   * tint) reads only `line`/`column`/`basis` and is unaffected by these
+   * being present or absent.
+   *
+   * Set only when `basis` is `'resolved'`: that is the one case backed by a
+   * real node with a real `range` to measure (see `locate.ts`'s
+   * `locateNode`). A `'reported'` location is the position CircleCI itself
+   * quoted in a YAML parse error -- a bare point in its own prose, with no
+   * node and therefore no honest width to underline. Clamped to `line` even
+   * when the located node's own range continues onto a later line (a
+   * multi-line block scalar, say): an inline squiggle spanning a hard line
+   * break is a different, riskier decoration than the single-line one this
+   * exists to draw, and the entities this module actually resolves (a key,
+   * a name, an id) are single-line tokens in every fixture this app has.
+   */
+  endLine?: number;
+  endColumn?: number;
 }
 
 /**
