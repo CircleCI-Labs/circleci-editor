@@ -199,6 +199,22 @@ const MINIMAP_MAX_HEIGHT = 200;
 // and the canvas -- narrow enough to still show the "Steps"/"Requires"
 // headings, wide enough that a long orb command name (issue #28) isn't
 // forced to truncate immediately.
+//
+// 220 is measured to be too narrow, and is kept anyway. Sweeping the divider
+// across its full range on the running app and counting elements whose text
+// actually overflows its box:
+//
+//   |                       | at 220px | at 280px (default) | first width with 0 |
+//   |-----------------------|----------|--------------------|--------------------|
+//   | before the type fix   |     4    |          1         |        300px       |
+//   | after                 |   **3**  |        **0**       |      **268px**     |
+//
+// So the 280px default is vindicated by measurement rather than inherited, and
+// 220px leaves three elements truncating -- below what this pane's content
+// needs. Raising the floor was not taken because it takes width from the
+// canvas, which is already below what *it* needs, and is the worse victim of
+// the two. Recorded here rather than left in a tracker so the number is not
+// re-derived by whoever next wonders whether it is arbitrary.
 const INSPECTOR_MIN_WIDTH = 220;
 const INSPECTOR_MAX_WIDTH = 560;
 const INSPECTOR_DEFAULT_WIDTH = 280;
