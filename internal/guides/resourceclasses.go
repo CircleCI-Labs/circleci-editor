@@ -24,6 +24,7 @@ package guides
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -79,11 +80,24 @@ import (
 //
 // # Failing honestly
 //
-// ExtractResourceClasses is all-or-nothing. A partial result would leave some
-// executors accurate and others stale with nothing in the UI able to say which,
-// which is worse than one honest "this list is the one built into this release,
-// not CircleCI's current one" notice. See ResourceClasses for what that
-// fallback is and why it is not a hand-written list.
+// ExtractResourceClasses fails outright only when it has nothing at all to
+// offer -- the guide is missing, or every environment failed to resolve --
+// which is the one case a whole-list fallback is the honest answer for. See
+// ResourceClasses for what that fallback is and why it is not a hand-written
+// list.
+//
+// A single environment failing (its anchor renamed or removed, or its table
+// reshaped) instead degrades that one ResourceClassEnvironment in place
+// (Degraded, DegradedReason) while every other environment keeps whatever the
+// currently-served documentation says. Before issue #44 this file went
+// all-or-nothing on any single failure, on the theory that a partial result
+// would leave some executors accurate and others stale with nothing able to
+// say which. In practice that theory made things worse: a real upstream
+// restructuring (LinuxVM's, which prompted #44) breaks one section, and the
+// old behaviour turned that into losing all ten environments' current data
+// -- including the nine nothing was wrong with -- for the one built into the
+// release instead. Degrading in place is the same "say what you don't know"
+// principle applied at the grain the failure actually occurs at.
 //
 // # Why this file was not retired for GET /api/v3/catalog/offerings (issue #305)
 //
@@ -125,22 +139,35 @@ const (
 	ArchUnstated = ""
 )
 
-// Generations a class can belong to.
+// Generations a class can belong to. GenerationGen1 and GenerationGen2 are
+// named constants because every class-name test in this package predates
+// gen3 and spells them out; gen3 and any generation after it are matched
+// generically by genSuffixPattern below rather than getting a constant each,
+// which is the point -- issue #44 asked for a new generation to need no code
+// change, and a growing enum of `GenerationGenN` constants would be exactly
+// the code change that request was against.
 const (
 	// GenerationGen1 is CircleCI's original compute generation, spelled with no
 	// suffix at all (`xlarge`, `arm.medium`).
 	GenerationGen1 = "gen1"
-	// GenerationGen2 is the newer generation, spelled as a `.gen2` suffix on
-	// the class name (`xlarge.gen2`, `gpu.nvidia.small.gen2`). It *is*
-	// expressible in `resource_class`, which is why gen2 classes are offered
-	// as ordinary options in their own upstream-labelled group rather than
-	// behind a separate control -- see the doc comment on
+	// GenerationGen2 is spelled as a `.gen2` suffix on the class name
+	// (`xlarge.gen2`, `gpu.nvidia.small.gen2`). It *is* expressible in
+	// `resource_class`, which is why gen2 (and gen3, and any later generation)
+	// classes are offered as ordinary options in their own upstream-labelled
+	// group rather than behind a separate control -- see the doc comment on
 	// ResourceClassEnvironment.Generation.
 	GenerationGen2 = "gen2"
 )
 
-// gen2Suffix is how CircleCI spells generation 2 in a resource class name.
-const gen2Suffix = ".gen2"
+// genSuffixPattern matches CircleCI's generation-N suffix on a class name
+// (`.gen2`, `.gen3`, ...; verified against `linuxvm-gen3-execution-
+// environment`'s own classes -- `medium.gen3`, `large.gen3` -- live on
+// circleci-docs 2026-08-07). Matched generically rather than as a fixed
+// `.gen2`/`.gen3`/... alternation, which is what lets classGeneration read
+// gen3's classes correctly with no change here: hardcoding `.gen2` alone,
+// this file's shape before gen3 shipped, silently read every `.gen3` class as
+// gen1, a confident wrong answer this package exists to avoid.
+var genSuffixPattern = regexp.MustCompile(`(?i)\.gen([0-9]+)$`)
 
 // armSegment is the class-name segment that means arm64. Matched as a whole
 // dot-separated segment, not as a prefix: `arm.medium` and
@@ -171,7 +198,9 @@ type ResourceClass struct {
 	Default bool `json:"default,omitempty"`
 	// Architecture is ArchX86, ArchArm or ArchUnstated -- derived from Name.
 	Architecture string `json:"architecture"`
-	// Generation is GenerationGen1 or GenerationGen2 -- derived from Name.
+	// Generation is GenerationGen1, GenerationGen2, or "gen3"/"gen4"/... for
+	// any later generation CircleCI spells the same way -- derived from Name.
+	// See genSuffixPattern.
 	Generation string `json:"generation"`
 	// Rank orders this class among the *other classes in the same
 	// ResourceClassEnvironment* -- 0 is the smallest, larger classes get
@@ -214,15 +243,37 @@ type ResourceClassEnvironment struct {
 	// than as a filter: a second dropdown that only ever appends a suffix would
 	// be chrome for something the class list can say plainly.
 	Generation string `json:"generation"`
-	// Classes are the table's rows, in upstream's order.
+	// Classes are the table's rows, in upstream's order. Empty when Degraded is
+	// true -- never a previous response's classes carried forward, and never a
+	// guess, because a caller cannot tell "empty because degraded" from "empty
+	// but current" any other way.
 	Classes []ResourceClass `json:"classes"`
+	// Degraded reports that *this* environment's table could not be read from
+	// the documentation currently being served, while every other environment
+	// in the same ExtractResourceClasses result derived normally. DegradedReason
+	// says why.
+	//
+	// Before issue #44, ExtractResourceClasses was all-or-nothing: one
+	// disappeared anchor discarded all ten environments' worth of current data
+	// rather than the one it actually affected. That traded a real, mostly-
+	// correct answer for a stale one over a single environment's problem, which
+	// is a worse trade than it looks -- an upstream restructuring is far more
+	// likely to touch one section (as it did here, LinuxVM's) than to break
+	// every table on the page at once. Degraded is the per-environment version
+	// of ResourceClassesResult.Derived, at finer grain.
+	Degraded bool `json:"degraded,omitempty"`
+	// DegradedReason is set when Degraded is true: a sentence a UI can show
+	// next to this one card.
+	DegradedReason string `json:"degradedReason,omitempty"`
 }
 
 // resourceEnvironmentDef joins one upstream section anchor to the executor key
-// its classes belong to. This slice is the entirety of this file's hardcoded
-// knowledge of CircleCI's compute offering -- everything else is read from the
-// tables. Its order is the order a picker lists environments in, which is
-// upstream's own document order.
+// its classes belong to. resourceEnvironments below is the entirety of this
+// file's hardcoded knowledge of CircleCI's compute offering -- everything else
+// is read from the tables, including any *additional* environment discovered
+// by discoverResourceEnvironments (see its own doc comment). The order
+// ExtractResourceClasses returns is upstream's own document order regardless
+// of which of the two sources a def came from.
 type resourceEnvironmentDef struct {
 	anchor string
 	kind   string
@@ -238,9 +289,17 @@ const (
 	KindMacOS   = "macos"
 )
 
-// resourceEnvironments is the join key. Every anchor here is an explicit
-// `[#id]` line in the configuration reference; TestEveryResourceEnvironment
-// AnchorResolves fails if upstream drops one.
+// resourceEnvironments is the join key. Every anchor here is (or was, before
+// upstream removed it, in which case it degrades individually rather than
+// vanishing -- see ExtractResourceClasses) an explicit `[#id]` line in the
+// configuration reference; TestEveryResourceEnvironmentAnchorResolves checks
+// that against the vendored snapshot.
+//
+// This list is not the only source of environments any more (see
+// discoverResourceEnvironments), but it is still the *only* source of Kind:
+// nothing in a table says whether `medium` belongs to Docker or the machine
+// executor, so every environment this project already knows about stays
+// declared here rather than guessed at.
 var resourceEnvironments = []resourceEnvironmentDef{
 	{anchor: "x86", kind: KindDocker},
 	{anchor: "x86-gen2", kind: KindDocker},
@@ -252,6 +311,70 @@ var resourceEnvironments = []resourceEnvironmentDef{
 	{anchor: "gpu-execution-environment-linux", kind: KindMachine},
 	{anchor: "gpu-execution-environment-windows", kind: KindMachine},
 	{anchor: "macos-execution-environment", kind: KindMacOS},
+}
+
+// executionEnvironmentSuffix is the naming convention every one of upstream's
+// *non-Docker* resource-table sections uses on its anchor -- Docker's three
+// are bare architecture names ("x86", "x86-gen2", "arm") because they share
+// one parent section, while LinuxVM/macOS/Windows/GPU/Arm-VM each get their
+// own section and all spell it "...-execution-environment". A new compute
+// generation added under an existing family follows the same convention one
+// level down (`linuxvm-gen3-execution-environment`, sibling to `-gen2`'s own
+// heading), which is what makes the suffix a safe signal for "this heading is
+// a resource-table generation this file has not been told about yet",
+// checked in discoverResourceEnvironments.
+const executionEnvironmentSuffix = "-execution-environment"
+
+// discoverResourceEnvironments finds heading-level anchors that look like a
+// resource-table environment resourceEnvironments does not already name, so a
+// new one -- a new compute generation, concretely -- becomes visible with no
+// code change (issue #44's gen3 ask).
+//
+// Restricted to *heading* anchors (KindHeading blocks, level 4 and deeper),
+// never section anchors, on purpose: `docker-execution-environment` is a
+// level-3 section whose own anchor also ends in the suffix, and it encloses
+// x86/x86-gen2/arm's tables the same way `linuxvm-execution-environment`
+// encloses Gen1's (see tablesByAnchor's section-fallback) -- discovering it
+// too would offer a fourth, duplicate "Docker" environment built from
+// whichever of its children's tables happened to come first. New generations
+// are added as a heading nested in an existing family's section (Gen2's
+// heading, then Gen3's, both inside `linuxvm-execution-environment`); a
+// wholly new top-level family is not the case this guards, and would need a
+// declared Kind here regardless, because nothing upstream states what
+// executor a brand new section belongs to.
+//
+// Every anchor found this way is offered under KindMachine. That is a
+// declared guess, not a derived fact -- but every heading-level
+// `*-execution-environment` anchor upstream has ever used belongs to the
+// machine executor (LinuxVM's generations), and offering a new generation
+// under a possibly-wrong kind is a better failure than not offering it at
+// all, which is what happened to gen3 before this file knew its anchor
+// existed.
+func discoverResourceEnvironments(guide Guide, tables map[string]anchoredTable, known map[string]bool) []resourceEnvironmentDef {
+	var out []resourceEnvironmentDef
+	seen := map[string]bool{}
+	for _, section := range guide.Sections {
+		for _, block := range section.Blocks {
+			if block.Kind != KindHeading || known[block.ID] || seen[block.ID] {
+				continue
+			}
+			if !strings.HasSuffix(block.ID, executionEnvironmentSuffix) {
+				continue
+			}
+			if _, hasTable := tables[block.ID]; !hasTable {
+				// Looks like an environment anchor but resolves to no
+				// resource-class table -- not the shape this is looking for,
+				// and not something worth reporting as a degraded environment
+				// either: this file never declared it, so its absence is not
+				// a regression to surface, just a heading that is not one of
+				// these tables.
+				continue
+			}
+			seen[block.ID] = true
+			out = append(out, resourceEnvironmentDef{anchor: block.ID, kind: KindMachine})
+		}
+	}
+	return out
 }
 
 // classArchitecture derives an architecture from a resource class name, because
@@ -279,12 +402,13 @@ func classArchitecture(name, kind string) string {
 	return ArchX86
 }
 
-// classGeneration derives a generation from a resource class name. Gen2 is
-// spelled as a `.gen2` suffix (`xlarge.gen2`, `gpu.nvidia.small.gen2`);
-// everything else is gen1, which has no suffix of its own.
+// classGeneration derives a generation from a resource class name. Any
+// `.genN` suffix (`xlarge.gen2`, `medium.gen3`, `gpu.nvidia.small.gen2`) names
+// that generation; a name with no such suffix is gen1, which has none of its
+// own.
 func classGeneration(name string) string {
-	if strings.HasSuffix(strings.ToLower(name), gen2Suffix) {
-		return GenerationGen2
+	if m := genSuffixPattern.FindStringSubmatch(name); m != nil {
+		return "gen" + m[1]
 	}
 	return GenerationGen1
 }
@@ -368,11 +492,18 @@ func EmbeddedResourceClasses() ([]ResourceClassEnvironment, error) {
 }
 
 // ExtractResourceClasses reads the resource-class tables out of the parsed
-// configuration reference.
+// configuration reference: one ResourceClassEnvironment per anchor in
+// resourceEnvironments, plus any discoverResourceEnvironments finds, in
+// upstream's document order.
 //
-// All-or-nothing on purpose: an error here means the *whole* list falls back,
-// because a partial result would offer some executors' real classes and others'
-// stale ones with no way for the UI to say which is which.
+// Fails outright only when there is nothing to read at all: the guide itself
+// is missing, or every declared and discovered anchor failed to resolve. A
+// single anchor failing -- upstream renamed or removed it, or its table no
+// longer looks like one -- degrades *that* ResourceClassEnvironment
+// (Degraded, DegradedReason) rather than the whole result, which is the
+// change issue #44 asked for: before it, one disappeared anchor discarded
+// nine other environments' worth of perfectly good, current data along with
+// the one it actually affected.
 func ExtractResourceClasses(parsed []Guide) ([]ResourceClassEnvironment, error) {
 	guide := findGuideByID(parsed, ResourceClassGuideID)
 	if guide == nil {
@@ -380,26 +511,129 @@ func ExtractResourceClasses(parsed []Guide) ([]ResourceClassEnvironment, error) 
 	}
 
 	tables := tablesByAnchor(*guide, isResourceClassTable)
-	out := make([]ResourceClassEnvironment, 0, len(resourceEnvironments))
+
+	known := make(map[string]bool, len(resourceEnvironments))
 	for _, def := range resourceEnvironments {
-		found, ok := tables[def.anchor]
-		if !ok {
-			return nil, fmt.Errorf("guides: the configuration reference no longer has a resource-class table under its %q section, so resource classes could not be read from CircleCI's own tables", def.anchor)
-		}
-		classes, err := resourceClassesFromTable(found.table, def.kind)
+		known[def.anchor] = true
+	}
+	discovered := discoverResourceEnvironments(*guide, tables, known)
+	defs := mergeDiscovered(resourceEnvironments, discovered, anchorPositions(*guide))
+
+	out := make([]ResourceClassEnvironment, 0, len(defs))
+	resolved := 0
+	for _, def := range defs {
+		env, err := resourceClassEnvironmentFor(def, tables)
 		if err != nil {
-			return nil, fmt.Errorf("guides: the resource-class table under %q could not be read (%w), so resource classes could not be read from CircleCI's own tables", def.anchor, err)
+			out = append(out, ResourceClassEnvironment{
+				ID:             def.anchor,
+				Kind:           def.kind,
+				Degraded:       true,
+				DegradedReason: err.Error(),
+			})
+			continue
 		}
-		out = append(out, ResourceClassEnvironment{
-			ID:           def.anchor,
-			Label:        found.label,
-			Kind:         def.kind,
-			Architecture: commonArchitecture(classes),
-			Generation:   commonGeneration(classes),
-			Classes:      classes,
-		})
+		resolved++
+		out = append(out, env)
+	}
+	// Zero resolved is the one case left where the whole result is worthless
+	// rather than merely incomplete -- indistinguishable in practice from the
+	// guide having gone missing, so it is reported the same way and
+	// ResourceClasses falls all the way back to the embedded snapshot instead
+	// of returning ten (or eleven) empty, degraded cards.
+	if resolved == 0 {
+		return nil, fmt.Errorf("guides: none of the configuration reference's resource-class tables could be read, so resource classes could not be read from CircleCI's own tables")
 	}
 	return out, nil
+}
+
+// resourceClassEnvironmentFor resolves one environment definition against
+// tables, the error path ExtractResourceClasses turns into a Degraded entry
+// rather than a fatal one.
+func resourceClassEnvironmentFor(def resourceEnvironmentDef, tables map[string]anchoredTable) (ResourceClassEnvironment, error) {
+	found, ok := tables[def.anchor]
+	if !ok {
+		return ResourceClassEnvironment{}, fmt.Errorf("the configuration reference no longer has a resource-class table under its %q section", def.anchor)
+	}
+	classes, err := resourceClassesFromTable(found.table, def.kind)
+	if err != nil {
+		return ResourceClassEnvironment{}, fmt.Errorf("the resource-class table under %q could not be read (%w)", def.anchor, err)
+	}
+	return ResourceClassEnvironment{
+		ID:           def.anchor,
+		Label:        found.label,
+		Kind:         def.kind,
+		Architecture: commonArchitecture(classes),
+		Generation:   commonGeneration(classes),
+		Classes:      classes,
+	}, nil
+}
+
+// anchorPositions maps every section and heading anchor in guide to its index
+// in document order, so environments named by resourceEnvironments and
+// environments discoverResourceEnvironments finds -- two different sources --
+// still come back in one order: upstream's own, which is the order a picker
+// should list them in.
+func anchorPositions(guide Guide) map[string]int {
+	positions := make(map[string]int)
+	note := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, seen := positions[id]; !seen {
+			positions[id] = len(positions)
+		}
+	}
+	for _, section := range guide.Sections {
+		note(section.ID)
+		for _, block := range section.Blocks {
+			if block.Kind == KindHeading {
+				note(block.ID)
+			}
+		}
+	}
+	return positions
+}
+
+// mergeDiscovered inserts each discovered def next to its nearest preceding
+// declared sibling in real document order, leaving declared's own relative
+// order untouched otherwise.
+//
+// declared's order is this project's curated picker order, not strictly
+// upstream's document order (macOS, for instance, is declared after Arm-VM/
+// Windows/GPU even though its section currently comes first) -- so resorting
+// the whole list by true position, the simpler-looking approach, would
+// silently relitigate that curation every time upstream reshuffles its
+// sections. What a *new* anchor needs is narrower: a sensible spot near the
+// family it belongs to, which "immediately after whichever declared anchor
+// most closely precedes it" gives for exactly the shape issue #44 introduces
+// (a new generation's heading sitting right after the previous generation's,
+// inside a section declared already) without reordering anything declared
+// already covers.
+func mergeDiscovered(declared, discoveredDefs []resourceEnvironmentDef, positions map[string]int) []resourceEnvironmentDef {
+	out := append([]resourceEnvironmentDef{}, declared...)
+	for _, d := range discoveredDefs {
+		dPos, ok := positions[d.anchor]
+		insertAt := len(out)
+		if ok {
+			bestIndex, bestPos := -1, -1
+			for i, r := range out {
+				rPos, rOK := positions[r.anchor]
+				if !rOK || rPos >= dPos {
+					continue
+				}
+				if rPos > bestPos {
+					bestPos, bestIndex = rPos, i
+				}
+			}
+			if bestIndex >= 0 {
+				insertAt = bestIndex + 1
+			} else {
+				insertAt = 0
+			}
+		}
+		out = append(out[:insertAt:insertAt], append([]resourceEnvironmentDef{d}, out[insertAt:]...)...)
+	}
+	return out
 }
 
 // anchoredTable is an upstream table plus the heading text above it.
@@ -409,16 +643,32 @@ type anchoredTable struct {
 }
 
 // tablesByAnchor indexes every table in a guide that `wanted` accepts by the
-// anchor of the nearest heading above it.
+// anchor of the nearest heading above it -- and, in addition, by the anchor
+// of its *enclosing section*, so a caller that still names the section (issue
+// #44) keeps working even after upstream interposes a heading between the
+// section and its table.
 //
 // It tracks headings *and* sections, so it keeps working whichever level
-// upstream writes these headings at. Today all ten resource tables sit as
-// level-4 KindHeading blocks inside the single level-3
-// `docker-execution-environment` section (upstream writes the
-// LinuxVM/macOS/Windows/GPU/Arm ones as `====` even though they are siblings of
-// the Docker one, not children), while the supported-Xcode table sits under a
-// level-3 heading of its own on a different page. If upstream promotes or demotes
-// any of them they are still found under the same anchor.
+// upstream writes these headings at. Today all ten original resource tables
+// sit as level-4 KindHeading blocks inside a level-3 section (`docker-
+// execution-environment` for the Docker three; each of LinuxVM/macOS/Windows/
+// GPU/Arm owns its own level-3 section), while the supported-Xcode table sits
+// under a level-3 heading of its own on a different page. If upstream
+// promotes or demotes any of them they are still found under the same anchor.
+//
+// The section-level entry is the fix for the LinuxVM section specifically:
+// upstream (circleci-docs, verified live 2026-08-07) restructured
+// `linuxvm-execution-environment` from "heading, then its table" to "heading,
+// then an example and a `[tabs]` block, then a *new* `Gen1` sub-heading, then
+// the table" -- so the table that used to sit directly under the section now
+// sits under a heading the section did not use to have. Requiring exact
+// adjacency (or even "the nearest heading, however many blocks below") would
+// have kept missing it; recording *both* the nearest heading's table (here,
+// `linuxvm-gen1`) and, as a fallback, the section's own first qualifying
+// table lets a caller ask for either name and get the same table. First
+// table under an anchor wins either way: upstream puts at most one matching
+// table per heading, and a second would be a shape change this file should
+// not paper over.
 //
 // Shared by resource-class extraction and Xcode-version extraction (issue #211)
 // rather than copied: "find the table under upstream's own anchor" is the join
@@ -426,9 +676,15 @@ type anchoredTable struct {
 // step with the parser.
 func tablesByAnchor(guide Guide, wanted func(*Table) bool) map[string]anchoredTable {
 	out := map[string]anchoredTable{}
+	record := func(anchor, label string, table *Table) {
+		if _, seen := out[anchor]; !seen {
+			out[anchor] = anchoredTable{table: table, label: label}
+		}
+	}
 	for _, section := range guide.Sections {
 		anchor := section.ID
 		label := section.Title
+		var sectionFirst *anchoredTable
 		// if/else rather than a switch on BlockKind: only two of the seven kinds
 		// matter here, and a switch would either have to name the other five to
 		// satisfy the exhaustive linter or carry a default that says nothing.
@@ -441,12 +697,18 @@ func tablesByAnchor(guide Guide, wanted func(*Table) bool) map[string]anchoredTa
 			if block.Kind != KindTable || !wanted(block.Table) {
 				continue
 			}
-			// First table under an anchor wins: upstream puts at most one
-			// matching table per heading, and a second would be a shape change
-			// this file should not paper over.
-			if _, seen := out[anchor]; !seen {
-				out[anchor] = anchoredTable{table: block.Table, label: label}
+			record(anchor, label, block.Table)
+			if sectionFirst == nil {
+				sectionFirst = &anchoredTable{table: block.Table, label: section.Title}
 			}
+		}
+		// The section's own anchor resolves to whichever table came first in
+		// its subtree, regardless of how many headings sit between the section
+		// and it -- a no-op when the table was already the section's first
+		// block (every environment but LinuxVM, both before and after this
+		// fix), and the actual fix when it is not.
+		if sectionFirst != nil {
+			record(section.ID, section.Title, sectionFirst.table)
 		}
 	}
 	return out

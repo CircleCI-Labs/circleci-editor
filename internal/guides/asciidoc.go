@@ -74,6 +74,17 @@ type parser struct {
 	// pendingAttrs is the most recent `[...]` block-attribute line, consumed
 	// by whatever block follows it.
 	pendingAttrs string
+	// pendingAnchor is the most recent `[#id]` line seen since the last block
+	// was consumed, tracked separately from pendingAttrs because upstream
+	// legitimately stacks more than one `[...]` line before a single heading
+	// (`[#linuxvm-gen3-execution-environment]` then `[badge="Beta"]` before
+	// `==== Gen3`, verified live on circleci-docs 2026-08-07). pendingAttrs is
+	// right to let the later line win -- it is a fresh attribute list each
+	// time -- but an anchor from an earlier line in the same stack must
+	// survive to the heading, or an explicit id silently becomes a
+	// slugified-title guess and every anchor-based lookup for that heading
+	// (tablesByAnchor, Guide.Anchors) misses it.
+	pendingAnchor string
 	// pendingTitle is the most recent `.Title` block-title line.
 	pendingTitle string
 
@@ -460,6 +471,7 @@ func (p *parser) parseBlocks(stop func() bool) []Block {
 			// that does nothing.
 			if anchor, ok := anchorAttr(line); ok {
 				p.noteAnchor(anchor, p.currentSection)
+				p.pendingAnchor = anchor
 			}
 			p.pendingAttrs = line[1 : len(line)-1]
 			p.pos++
@@ -496,7 +508,7 @@ func (p *parser) parseBlocks(stop func() bool) []Block {
 			// promoting a partial's headings to sections would reorder the
 			// nav relative to the live site.
 			level, text, _ := headingLevel(line)
-			explicit, hasExplicit := anchorAttr("[" + p.pendingAttrs + "]")
+			explicit, hasExplicit := p.pendingAnchor, p.pendingAnchor != ""
 			p.pos++
 			spans := parseSpans(text, p.ctx)
 			id := explicit
@@ -578,6 +590,7 @@ func isHeadingLine(line string) bool {
 
 func (p *parser) clearPending() {
 	p.pendingAttrs = ""
+	p.pendingAnchor = ""
 	p.pendingTitle = ""
 }
 

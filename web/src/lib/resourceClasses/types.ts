@@ -69,7 +69,25 @@ export interface ResourceClassEnvironment {
   architecture: string;
   /** The generation every class here shares, or `''` when they differ. */
   generation: string;
+  /**
+   * The table's rows, in upstream's order. Empty when `degraded` is true --
+   * never a previous response's classes carried forward.
+   */
   classes: ResourceClass[];
+  /**
+   * This one environment's table could not be read from the documentation
+   * currently being served, while every *other* environment in the same
+   * response derived normally (issue #44). `degradedReason` says why.
+   *
+   * Before issue #44 there was no such thing as a partially-derived response:
+   * one anchor going missing upstream discarded every environment's classes,
+   * not just the one it affected. A UI should treat this the same way it
+   * treats `ResourceClassesResponse.derived` being false, just for one card
+   * instead of the whole list.
+   */
+  degraded?: boolean;
+  /** Set when `degraded` is true: a sentence to show next to this one card. */
+  degradedReason?: string;
 }
 
 /**
