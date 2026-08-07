@@ -58,6 +58,12 @@ type fakeLister struct {
 	publicErr    error
 
 	publicUnblock chan struct{} // closed by the test to let the full crawl proceed.
+	// publicEntered, when non-nil, receives once as the full crawl begins.
+	// Reaching that point proves the certified stage has already finished, so
+	// a test can assert on the state between the two stages without racing
+	// the background goroutine. Sent to without blocking so a second call
+	// cannot deadlock here.
+	publicEntered chan struct{}
 
 	calls []circleci.ListOrbsOptions
 }
@@ -77,6 +83,12 @@ func (f *fakeLister) ListAllOrbPackages(ctx context.Context, opts circleci.ListO
 		}
 		return f.certified, nil
 	default:
+		if f.publicEntered != nil {
+			select {
+			case f.publicEntered <- struct{}{}:
+			default:
+			}
+		}
 		if f.publicUnblock != nil {
 			select {
 			case <-f.publicUnblock:
@@ -401,22 +413,42 @@ func TestCache_FreshDiskCache_IsNotStale(t *testing.T) {
 // running" was indistinguishable from "nothing, and nothing is being done
 // about it" -- the two states issue #257 needs told apart.
 func TestCache_WarmingIsSetBeforeTheFirstPublish(t *testing.T) {
+	entered := make(chan struct{}, 1)
 	lister := &fakeLister{
-		certifiedErr: &circleci.APIError{StatusCode: 500, Method: "GET", Path: "/api/v3/orb/packages", Body: "boom"},
-		publicErr:    &circleci.APIError{StatusCode: 500, Method: "GET", Path: "/api/v3/orb/packages", Body: "boom"},
+		certifiedErr:  &circleci.APIError{StatusCode: 500, Method: "GET", Path: "/api/v3/orb/packages", Body: "boom"},
+		publicErr:     &circleci.APIError{StatusCode: 500, Method: "GET", Path: "/api/v3/orb/packages", Body: "boom"},
+		publicUnblock: make(chan struct{}),
+		publicEntered: entered,
 	}
 
 	cache := orbs.New(lister, "", "example.com", nil)
 	cache.Start(context.Background())
 
-	// Immediately after Start: the certified stage has already failed and
-	// published nothing, but the background crawl is running.
+	// Wait for the full crawl to have begun, and hold it there.
+	//
+	// Both stages fail immediately against this fake -- there is no network to
+	// be slow -- so the entire warm cycle could finish before the assertions
+	// below ran, at which point Warming is legitimately false and this test
+	// failed on the scheduler rather than on the cache. It did exactly that on
+	// CI, on a branch that touched no Go code.
+	//
+	// Blocking the crawl makes the state being asserted the *only* state the
+	// cache can be in: the certified stage has failed and published nothing
+	// (reaching the full crawl proves it finished), and the crawl cannot
+	// complete until this test allows it.
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the full crawl to start")
+	}
+
 	status := cache.Status()
 	assert.Equal(t, status.Count, 0)
 	assert.Assert(t, status.Err != nil, "the certified-stage failure must be recorded")
 	assert.Assert(t, status.Warming, "a crawl is running, and an empty list must be able to say so")
 
 	// Once that crawl fails too, Warming drops and the reason is what is left.
+	close(lister.publicUnblock)
 	waitWarm(t, cache.WarmDone(), 2*time.Second)
 	assert.Assert(t, cache.Status().Err != nil)
 }
