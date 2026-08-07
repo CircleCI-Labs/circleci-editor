@@ -42,7 +42,14 @@
  * of those states -- a refresh only ever *replaces* a good copy -- so none of
  * them is a loading or error state.
  */
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import { Badge } from '~/design/components/Badge';
 import { Button } from '~/design/components/Button';
@@ -279,6 +286,38 @@ export function GuideView({
     [guides, guideId],
   );
 
+  // Issue #19: a mid-section anchor -- one `Guide.anchors` maps to the
+  // *enclosing* section rather than to itself, because that is the most
+  // precise thing the section-only navigation this pane shipped with could
+  // resolve. The block carrying that exact anchor as its own DOM `id`
+  // already exists (`GuideBlocks.tsx`'s `BlockNode`); what was missing is
+  // scrolling to it once the section it lives in is on screen.
+  //
+  // A ref, not state: it is written and read within one synchronous
+  // navigation (see `navigateToSection`) and must never itself cause a
+  // render -- only `navTick` does that, deliberately, so the effect below
+  // has one unambiguous trigger regardless of whether `sectionId` itself
+  // changed (clicking a ref whose target lives in the section already on
+  // screen must still scroll, even though `onSectionChange` is then called
+  // with the id already showing and therefore causes no prop change at all).
+  const pendingAnchorRef = useRef<string | null>(null);
+  const [navTick, setNavTick] = useState(0);
+
+  /**
+   * Every navigation this view initiates goes through here, including a
+   * plain section-list click (`anchor` omitted): that is what guarantees
+   * `pendingAnchorRef` never holds a stale value left over from a previous
+   * `ref` click by the time the effect below reads it.
+   */
+  const navigateToSection = useCallback(
+    (id: string | null, anchor?: string) => {
+      pendingAnchorRef.current = anchor ?? null;
+      setNavTick((n) => n + 1);
+      onSectionChange(id);
+    },
+    [onSectionChange],
+  );
+
   // Search spans *every* guide, not just the selected one: someone typing
   // "path filtering" doesn't know (and shouldn't have to) that it lives in the
   // dynamic-config page rather than the configuration reference. That matters
@@ -299,9 +338,41 @@ export function GuideView({
   // than calling `scrollTo`, because jsdom implements the former and not the
   // latter -- and a component that throws under test is a component whose
   // behaviour cannot be asserted.
+  //
+  // Declared *before* the anchor-scroll effect below, on purpose: both can
+  // fire in the same commit (a `ref` click that also changes section), and
+  // React runs a component's own effects in declaration order. This one must
+  // land first -- reset to the top -- so the anchor-scroll effect's own
+  // `scrollIntoView` is the one that has the last word, not the other way
+  // around.
   useEffect(() => {
     if (contentRef.current) contentRef.current.scrollTop = 0;
   }, [guideId, sectionId]);
+
+  // Issue #19's actual scroll: keyed on `navTick`, not on `sectionId`,
+  // because the case that matters most -- a `ref` whose target is a heading
+  // already inside the section on screen -- calls `onSectionChange` with the
+  // id it was already given, which the parent's own state bails out of
+  // re-rendering, so `sectionId` here never changes at all. `navTick` always
+  // does, on every navigation this view initiates, so it is the one signal
+  // this effect can rely on. One-shot: reading the ref clears it, so a
+  // render this effect did not cause (a guide's `provenance` refreshing, for
+  // instance) can never replay a stale scroll.
+  useEffect(() => {
+    const anchor = pendingAnchorRef.current;
+    pendingAnchorRef.current = null;
+    if (!anchor) return;
+    const target = contentRef.current?.querySelector(`#${CSS.escape(anchor)}`);
+    // jsdom does not implement scrollIntoView by default in every version
+    // this repo has run against -- guarding its existence, rather than
+    // wrapping in try/catch, keeps a genuinely missing anchor (upstream's
+    // own broken cross-reference, or a section still mid-render) silent in
+    // exactly the way `resolveRef` already treats an unresolvable target:
+    // nothing happens, rather than an error surfacing where a scroll would
+    // have been invisible anyway.
+    target?.scrollIntoView?.({ block: 'nearest' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- navTick is a nonce whose value is never read, only its identity change; contentRef is a ref.
+  }, [navTick]);
 
   if (!guide) {
     return (
@@ -313,7 +384,8 @@ export function GuideView({
 
   const context: GuideRenderContext = {
     guide,
-    onNavigate: (target) => onSectionChange(target),
+    onNavigate: (target, anchor) =>
+      navigateToSection(target, anchor === target ? undefined : anchor),
   };
 
   return (
@@ -323,7 +395,7 @@ export function GuideView({
         guide={guide}
         onSelect={(nextGuideId) => {
           onGuideChange(nextGuideId);
-          onSectionChange(null);
+          navigateToSection(null);
           setQuery('');
         }}
       />
@@ -360,7 +432,7 @@ export function GuideView({
                         type="button"
                         onClick={() => {
                           onGuideChange(result.guideId);
-                          onSectionChange(result.section.id);
+                          navigateToSection(result.section.id);
                         }}
                         className="block w-full rounded px-2 py-1 text-left text-xs text-cc-text-muted transition-colors hover:bg-cc-panel-raised hover:text-cc-text"
                       >
@@ -380,7 +452,7 @@ export function GuideView({
                 <li>
                   <button
                     type="button"
-                    onClick={() => onSectionChange(null)}
+                    onClick={() => navigateToSection(null)}
                     aria-pressed={sectionId === null}
                     className={`block w-full truncate rounded px-2 py-1 text-left text-xs transition-colors ${
                       sectionId === null
@@ -395,7 +467,7 @@ export function GuideView({
                   <li key={section.id}>
                     <button
                       type="button"
-                      onClick={() => onSectionChange(section.id)}
+                      onClick={() => navigateToSection(section.id)}
                       aria-pressed={section.id === sectionId}
                       className={`block w-full truncate rounded py-1 pr-2 text-left text-xs transition-colors ${
                         section.level >= 3 ? 'pl-5' : 'pl-2 font-medium'

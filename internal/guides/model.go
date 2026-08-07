@@ -174,10 +174,19 @@ type Block struct {
 	// Level is set for KindHeading: the AsciiDoc level (4 or deeper).
 	Level int `json:"level,omitempty"`
 
-	// ID is set for KindHeading: the heading's anchor, so a cross-reference
-	// to a level-4 heading resolves (the configuration reference has three
-	// links to `<<expression-based-job-filters>>`, which is an `h4`). It is
-	// recorded in Guide.Anchors, pointing at the enclosing section.
+	// ID is set for KindHeading (the heading's own anchor, so a
+	// cross-reference to a level-4 heading resolves -- the configuration
+	// reference has three links to `<<expression-based-job-filters>>`, which
+	// is an `h4`) and, since issue #19, for *any other* block kind whose
+	// source line was directly preceded by an explicit `[#id]` line --
+	// upstream attaches anchors to ordinary paragraphs, admonitions, tables
+	// and lists just as often as to headings, and cross-references them just
+	// as freely (`<<the-when-attribute>>`, `<<jobfilters>>`). Every ID here
+	// is also recorded in Guide.Anchors, pointing at the enclosing section --
+	// that mapping is the fallback a `ref` still has when its target didn't
+	// land on an addressable block (a duplicated anchor, one attached to a
+	// dropped `image::` line, ...); this field is what lets the renderer
+	// scroll to the *exact block* instead, when it can.
 	ID string `json:"id,omitempty"`
 }
 

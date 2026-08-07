@@ -2226,6 +2226,17 @@ function StepsSection({
     <CollapsibleSection
       id={sectionKey}
       title={title}
+      // Issue #19: a per-step-type link has existed since issue #78
+      // (`StepFieldsSection`'s own `stepDocsUrl`), but only once a step is
+      // both present and expanded -- there was nothing to click for "what is
+      // a step, generally" before that. `pre-steps`/`post-steps` link to
+      // their own documented section, not `steps`'s (see `DOCS_LINKS.jobs`'s
+      // own doc comment for why those are not the same anchor).
+      docsLink={
+        sectionKey === 'steps'
+          ? DOCS_LINKS.jobs.steps
+          : DOCS_LINKS.jobs.prePostSteps
+      }
       contentCount={steps.length}
       defaultOpen={defaultSectionOpen(sectionKey, steps.length > 0)}
     >
