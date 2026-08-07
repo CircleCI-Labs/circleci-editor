@@ -32,6 +32,7 @@ import (
 
 	"github.com/CircleCI-Labs/circleci-editor/internal/ai"
 	"github.com/CircleCI-Labs/circleci-editor/internal/ai/anthropic"
+	"github.com/CircleCI-Labs/circleci-editor/internal/ai/circlecimcp"
 	"github.com/CircleCI-Labs/circleci-editor/internal/ai/keystore"
 	"github.com/CircleCI-Labs/circleci-editor/internal/ai/secret"
 	"github.com/CircleCI-Labs/circleci-editor/internal/guides"
@@ -105,6 +106,51 @@ type aiStoragePayload struct {
 	Location string `json:"location"`
 }
 
+// aiCircleCIStatusPayload is GET /api/ai/status's report on CircleCI's own
+// hosted MCP server (issue #11) -- read-only tools (pipeline/workflow/job
+// status, logs, artifacts, test results) the assistant may call directly.
+//
+// There is no BYO configuration step here the way there is for the docs
+// server (aiMCPStatusResponse): this server needs no URL or token from the
+// user at all, because it authenticates with the same CIRCLE_TOKEN the CLI
+// plugin already injects for every other CircleCI-backed feature (see
+// internal/host/env.go's Environment.Token and, e.g., runAvailability's
+// identical "no token" degradation). So the only fact worth reporting is
+// whether that token exists in this process right now, and Reason names it
+// plainly when it does not -- the honest-degradation rule this app applies
+// everywhere else: a pane that cannot tell whether CircleCI tools are
+// available must never render as though they simply have none.
+type aiCircleCIStatusPayload struct {
+	Available bool `json:"available"`
+	// Reason is set only when Available is false, naming why -- today
+	// always "no CircleCI API token available in this environment", the
+	// one state this host can actually distinguish (see the type doc).
+	Reason string `json:"reason,omitempty"`
+}
+
+// circleCIMCPStatus reports whether s.env carries a CircleCI API token,
+// which is the only precondition this host can check without making a
+// network call of its own -- it never probes mcp.circleci.com to answer
+// this, for the same reason loadMCPConfig never pings the docs server: an
+// extra request on this app's own critical path buys no honesty this
+// process didn't already have for free by reading its own environment.
+// Whether the *remote* server is currently reachable is instead something
+// the assistant's own reply reports, turn by turn, the same way any
+// tool-use failure would surface in a model's own text -- see
+// circleCIToolsPrompt.
+func (s *Server) circleCIMCPStatus() aiCircleCIStatusPayload {
+	if !s.env.HasToken() {
+		return aiCircleCIStatusPayload{Reason: circleCINoTokenReason}
+	}
+	return aiCircleCIStatusPayload{Available: true}
+}
+
+// circleCINoTokenReason is the one reason /api/ai/status and /api/ai/chat
+// ever give for CircleCI's MCP tools being unavailable -- named once so the
+// two call sites (circleCIMCPStatus and handleAIChat) cannot drift to
+// slightly different wording for the identical fact.
+const circleCINoTokenReason = "no CircleCI API token available in this environment" //nolint:gosec // this is a human-readable status message, not a credential -- gosec's G101 pattern-matches the word "token" in a string constant's name and value, the same false positive mcpDocsTokenKey is already annotated for above.
+
 // aiStatusResponse is the JSON shape returned by GET /api/ai/status. Unlike
 // /api/meta and /api/validate, there is no single "available" flag here --
 // availability is per-provider (Configured), because "is the AI pane usable
@@ -112,6 +158,10 @@ type aiStoragePayload struct {
 type aiStatusResponse struct {
 	Providers []aiProviderStatusPayload `json:"providers"`
 	Storage   aiStoragePayload          `json:"storage"`
+	// CircleCI reports this app's read-only CircleCI MCP tools (issue #11),
+	// independent of every provider above: it needs no API key of its own,
+	// only the CLI plugin's own CIRCLE_TOKEN.
+	CircleCI aiCircleCIStatusPayload `json:"circleCI"`
 }
 
 // handleAIStatus serves GET /api/ai/status: which providers this build
@@ -152,6 +202,7 @@ func (s *Server) handleAIStatus(w http.ResponseWriter, r *http.Request) {
 			Backend:  string(s.aiStore.Backend()),
 			Location: s.aiStore.Location(),
 		},
+		CircleCI: s.circleCIMCPStatus(),
 	})
 }
 
@@ -523,6 +574,38 @@ func (s *Server) loadMCPConfig(ctx context.Context) (server ai.MCPServer, config
 	return ai.MCPServer{Name: mcpServerName, URL: serverURL, Token: tokenSecret}, true, ""
 }
 
+// loadCircleCIMCPConfig is handleAIChat's read path for issue #11's second
+// MCP server -- CircleCI's own hosted one, read tools only. Unlike
+// loadMCPConfig there is no keystore to read at all: this server is never
+// BYO-configured, it rides s.env.Token exactly the way runAvailability and
+// buildCircleCIClients already do for this app's other CircleCI-backed
+// features, and configured is simply whether that token exists (see
+// circleCIMCPStatus, which reports the identical fact to the settings
+// pane before any chat request is ever sent).
+//
+// AllowedTools always comes from circlecimcp.AllowedTools() -- never from
+// anything in ctx, ai.CompleteRequest, or a previous reply -- which is what
+// makes this app's read/write gate a *request-shaping* decision made
+// entirely on this host, before the model runs at all, rather than a
+// policy the model could talk its way around. See circlecimcp's package
+// doc for the mechanism this feeds.
+func (s *Server) loadCircleCIMCPConfig() (server ai.MCPServer, configured bool) {
+	if !s.env.HasToken() {
+		return ai.MCPServer{}, false
+	}
+	return ai.MCPServer{
+		Name: circlecimcp.ServerName,
+		URL:  circlecimcp.URL,
+		// secret.New here is justified the same way every other Reveal/wrap
+		// site in this file is: s.env.Token is already held in memory for
+		// this process's whole lifetime (LoadEnvironment reads it once at
+		// startup), and wrapping it is what stops it becoming a plain string
+		// again anywhere past this point.
+		Token:        secret.New(s.env.Token),
+		AllowedTools: circlecimcp.AllowedTools(),
+	}, true
+}
+
 // aiChatContextFile is one other file from the same `.circleci` directory
 // (issue #102), sent as read-only context alongside the open config.
 // Deliberately has no analogue to ConfigText's validation/job/workflow
@@ -677,6 +760,18 @@ type aiChatResponse struct {
 	// have quietly gone back to being recalled, so this is deliberately not
 	// collapsed into Grounded=false.
 	GroundingReason string `json:"groundingReason,omitempty"`
+	// CircleCIAvailable reports whether this reply had CircleCI's own
+	// read-only MCP tools available (issue #11) -- independent of Grounded,
+	// which is about the unrelated docs-grounding server. False means no
+	// CircleCI API token was available in this environment; CircleCIReason
+	// names that plainly rather than letting a "why couldn't it check my
+	// pipeline" question go unanswered.
+	CircleCIAvailable bool `json:"circleCIAvailable"`
+	// CircleCIReason is set whenever CircleCIAvailable is false -- unlike
+	// GroundingReason, there is no "configured but broken" state to reserve
+	// this for (see circleCIMCPStatus): this server is either usable or it
+	// is not, so its absence is always worth naming.
+	CircleCIReason string `json:"circleCIReason,omitempty"`
 }
 
 // handleAIChat serves POST /api/ai/chat: it builds a system prompt from the
@@ -754,7 +849,18 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 	mcpServer, mcpConfigured, groundingReason := s.loadMCPConfig(ctx)
 	var mcpServers []ai.MCPServer
 	if mcpConfigured {
-		mcpServers = []ai.MCPServer{mcpServer}
+		mcpServers = append(mcpServers, mcpServer)
+	}
+	// Issue #11's server: attached alongside (never instead of) the docs
+	// server above -- Anthropic's connector supports multiple mcp_servers
+	// entries in one request, and internal/ai/anthropic already loops over
+	// every entry in MCPServers to build one wireMCPServer/wireMCPToolset
+	// pair each, so this needed no change there. See loadCircleCIMCPConfig
+	// for why "configured" here is a plain token check, not a reason worth
+	// carrying through to the reply the way groundingReason is.
+	circleCIServer, circleCIConfigured := s.loadCircleCIMCPConfig()
+	if circleCIConfigured {
+		mcpServers = append(mcpServers, circleCIServer)
 	}
 
 	// Issue #22: the vendored docs snapshot this host already has parsed in
@@ -766,7 +872,15 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 	passages, groundingProvenance := s.selectGroundingPassages(lastUserMessage(req.Messages), req.Context.ConfigText)
 
 	result, err := provider.Complete(ctx, key, provider.DefaultModel(), ai.CompleteRequest{
-		System:     buildSystemPrompt(req.Context, mcpConfigured, groundingReason != "", passages, groundingProvenance),
+		System: buildSystemPrompt(systemPromptInput{
+			ctx:               req.Context,
+			mcpConfigured:     mcpConfigured,
+			groundingDegraded: groundingReason != "",
+			passages:          passages,
+			provenance:        groundingProvenance,
+			circleCIAvailable: circleCIConfigured,
+			projectSlug:       s.env.ProjectSlug(),
+		}),
 		Messages:   messages,
 		MCPServers: mcpServers,
 	})
@@ -785,14 +899,20 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		groundingURLs[i] = p.URL
 	}
 
+	circleCIReason := ""
+	if !circleCIConfigured {
+		circleCIReason = circleCINoTokenReason
+	}
 	writeJSON(w, http.StatusOK, aiChatResponse{
-		Available:       true,
-		Content:         result.Content,
-		Model:           result.Model,
-		Usage:           aiUsagePayload{InputTokens: result.InputTokens, OutputTokens: result.OutputTokens},
-		Sources:         s.citations(groundingURLs, result.Sources),
-		Grounded:        mcpConfigured,
-		GroundingReason: groundingReason,
+		Available:         true,
+		Content:           result.Content,
+		Model:             result.Model,
+		Usage:             aiUsagePayload{InputTokens: result.InputTokens, OutputTokens: result.OutputTokens},
+		Sources:           s.citations(groundingURLs, result.Sources),
+		Grounded:          mcpConfigured,
+		GroundingReason:   groundingReason,
+		CircleCIAvailable: circleCIConfigured,
+		CircleCIReason:    circleCIReason,
 	})
 }
 
@@ -915,6 +1035,27 @@ const mcpGroundingPrompt = `You also have access to a documentation search tool 
 // TestServer_AIChat_NoMCPConfigured_OmitsMCPServersAndGroundingPrompt pins.
 const mcpGroundingUnavailablePrompt = `A documentation search tool connected to CircleCI's official docs is configured for this editor, but it is unavailable for this reply -- the sign-in to it has expired or been rejected. You are therefore answering from training data alone, which may be stale. When the user asks how CircleCI itself behaves, say plainly that you are answering without docs grounding and that they can restore it by signing in again from the AI pane's settings. Do not imply any part of your answer is sourced.`
 
+// circleCIToolsPrompt is appended only when loadCircleCIMCPConfig attached
+// issue #11's CircleCI server -- so the unconfigured default (no
+// CIRCLE_TOKEN, the common case outside a `circleci editor` invocation with
+// one) stays byte-for-byte what it always has been, the same invariant
+// mcpGroundingPrompt already keeps for the docs server.
+//
+// Every tool named here is read-only by construction (see
+// internal/ai/circlecimcp) -- the paragraph still spells that out, because
+// the second half of it is doing real work: it tells the model there is no
+// action protocol for triggering, cancelling, or rerunning anything, full
+// stop, rather than leaving it to infer that from a tool simply not being
+// in its list. A model that is never told "you cannot do this, direct the
+// user to the Run button" might otherwise describe *itself* performing an
+// action it merely described the *user* being able to take, which reads to
+// a user as the assistant claiming an ability it does not have -- exactly
+// the failure mode issue #11's read/write split exists to prevent, stated
+// in the one place available to prevent it before a write-tool proposal
+// flow exists to make the "propose, user confirms" half real (tracked as
+// this issue's own follow-up).
+const circleCIToolsPrompt = `You also have read-only tools connected to CircleCI itself: you can check the status of pipeline runs and workflows, read a job's steps and logs, list its test results and artifacts, and look up the authenticated user's own recent runs. Use these when the user asks about a specific run, workflow, or job failure, or "why did my build fail" -- prefer checking with a tool over guessing from the config alone. You have no tool to trigger a pipeline, cancel a workflow, rerun a job, or change anything on CircleCI, and no action-block vocabulary for any of that either -- if asked, say plainly that you cannot do it and that they can do it themselves from this editor's own explicit Run controls (never imply you took an action you did not take, and never suggest they ask you again a different way).`
+
 // groundingPreamble introduces the "Documentation context" section
 // buildSystemPrompt appends only when guides.SelectPassages actually found
 // something for this turn (issue #22). It states three things a passage's
@@ -978,36 +1119,68 @@ func snapshotAgeNotice(prov guides.Provenance) string {
 	return dated
 }
 
+// systemPromptInput bundles buildSystemPrompt's inputs. Introduced with
+// issue #11's two additions (circleCIAvailable, projectSlug) purely to
+// avoid a seven-positional-argument signature; every field keeps exactly
+// the meaning it had as a bare parameter before this struct existed.
+type systemPromptInput struct {
+	ctx               aiChatContext
+	mcpConfigured     bool
+	groundingDegraded bool
+	passages          []guides.Passage
+	provenance        guides.Provenance
+	// circleCIAvailable mirrors handleAIChat's own circleCIConfigured --
+	// whether issue #11's read-only CircleCI MCP server was attached to
+	// this request.
+	circleCIAvailable bool
+	// projectSlug is s.env.ProjectSlug() -- the "<vcs>/<org>/<repo>" this
+	// checkout claims to belong to, from the CLI plugin's own injected
+	// environment variables (no network call). Named to the model only
+	// when circleCIAvailable, since it exists solely to save the user
+	// typing it as the project argument to list_runs -- there is no other
+	// reason for this string to reach a prompt.
+	projectSlug string
+}
+
 // buildSystemPrompt assembles the system prompt sent with every chat
 // request: the assistant's role, the action-proposal protocol
 // (actionSchemaPrompt), one of the two MCP docs-grounding paragraphs when
-// relevant, the vendored-documentation context this host selected on its
-// own (issue #22, see groundingContext), and the repo-aware context the
-// frontend supplied. Everything from ctx comes only from the config file
-// already open in the editor (see aiChatContext's doc comment) -- this
-// function never reads the filesystem itself, and passages/provenance come
-// only from this process's own already-parsed guides snapshot (see
+// relevant, issue #11's CircleCI-tools paragraph when relevant, the
+// vendored-documentation context this host selected on its own (issue #22,
+// see groundingContext), and the repo-aware context the frontend supplied.
+// Everything from in.ctx comes only from the config file already open in
+// the editor (see aiChatContext's doc comment) -- this function never reads
+// the filesystem itself, and in.passages/in.provenance come only from this
+// process's own already-parsed guides snapshot (see
 // selectGroundingPassages) -- neither is a second place this function
 // reaches out for something new.
 //
-// mcpConfigured and groundingDegraded are mutually exclusive by
+// in.mcpConfigured and in.groundingDegraded are mutually exclusive by
 // construction: loadMCPConfig returns a non-empty reason only when it is
-// also returning configured=false. passages is independent of both: it can
-// be non-empty whether or not any MCP server is configured at all, which is
-// the point of issue #22 -- this grounding needs neither.
-func buildSystemPrompt(ctx aiChatContext, mcpConfigured, groundingDegraded bool, passages []guides.Passage, provenance guides.Provenance) string {
+// also returning configured=false. in.passages is independent of both: it
+// can be non-empty whether or not any MCP server is configured at all,
+// which is the point of issue #22 -- this grounding needs neither.
+func buildSystemPrompt(in systemPromptInput) string {
+	ctx := in.ctx
 	var b strings.Builder
 	b.WriteString("You are an assistant embedded in the CircleCI Config Editor, a local tool for editing a single .circleci/config.yml file. Help the user understand and improve the CircleCI configuration currently open in their editor.\n\n")
 	b.WriteString(actionSchemaPrompt)
 	b.WriteString("\n\n")
-	if mcpConfigured {
+	if in.mcpConfigured {
 		b.WriteString(mcpGroundingPrompt)
 		b.WriteString("\n\n")
-	} else if groundingDegraded {
+	} else if in.groundingDegraded {
 		b.WriteString(mcpGroundingUnavailablePrompt)
 		b.WriteString("\n\n")
 	}
-	if docs := groundingContext(passages, provenance); docs != "" {
+	if in.circleCIAvailable {
+		b.WriteString(circleCIToolsPrompt)
+		if in.projectSlug != "" {
+			fmt.Fprintf(&b, " This repository's CircleCI project is %s.", in.projectSlug)
+		}
+		b.WriteString("\n\n")
+	}
+	if docs := groundingContext(in.passages, in.provenance); docs != "" {
 		b.WriteString(docs)
 		b.WriteString("\n")
 	}

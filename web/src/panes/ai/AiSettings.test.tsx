@@ -11,6 +11,7 @@ const AI_STATE_RESET = {
   statusState: 'ready' as const,
   providers: [] as AiProviderStatus[],
   storage: { backend: 'file' as const, location: '/fake/keys.json' },
+  circleCI: { available: false },
   statusError: null,
   selectedProvider: '',
   messages: [],
@@ -114,6 +115,7 @@ describe('AiSettings', () => {
         jsonResponse(200, {
           providers: [provider({ configured: false, source: 'none' })],
           storage: { backend: 'file', location: '/fake/keys.json' },
+          circleCI: { available: false },
         }),
       ],
     });
@@ -206,6 +208,7 @@ describe('AiSettings', () => {
             }),
           ],
           storage: { backend: 'file', location: '/fake/keys.json' },
+          circleCI: { available: false },
         }),
       ],
     });
@@ -249,5 +252,44 @@ describe('AiSettings', () => {
       /not configured/i,
     );
     expect(screen.queryByRole('button', { name: /remove/i })).toBeNull();
+  });
+
+  // Issue #11: the read-only CircleCI MCP status line. Both states are
+  // asserted from `useAiStore.setState` directly (like every other test in
+  // this file reads `state.storage`/`state.providers` off the store rather
+  // than re-deriving it from a fetch) -- `loadStatus` populating this field
+  // correctly is `aiStore.test.ts`'s job, not this component's.
+  it('reports CircleCI tools unavailable, with the host’s own reason, when no token is available', async () => {
+    useAiStore.setState({
+      providers: [provider({})],
+      circleCI: {
+        available: false,
+        reason: 'no CircleCI API token available in this environment',
+      },
+    });
+    mockFetchByMethodAndPath({});
+    render(<AiSettings />);
+    await screen.findByLabelText(/anthropic api key/i);
+
+    const section = await screen.findByTestId('circleci-mcp-status');
+    expect(within(section).getByText(/not available/i)).toBeTruthy();
+    expect(section.textContent).toMatch(
+      /no circleci api token available in this environment/i,
+    );
+  });
+
+  it('reports CircleCI tools available, and says plainly that they are read-only', async () => {
+    useAiStore.setState({
+      providers: [provider({})],
+      circleCI: { available: true },
+    });
+    mockFetchByMethodAndPath({});
+    render(<AiSettings />);
+    await screen.findByLabelText(/anthropic api key/i);
+
+    const section = await screen.findByTestId('circleci-mcp-status');
+    expect(within(section).getByText(/^available$/i)).toBeTruthy();
+    expect(section.textContent).toMatch(/read-only/i);
+    expect(section.textContent).toMatch(/cannot trigger, cancel, or rerun/i);
   });
 });

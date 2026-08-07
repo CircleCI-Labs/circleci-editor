@@ -1178,10 +1178,28 @@ export interface AiKeyStorage {
   location: string;
 }
 
+/**
+ * CircleCI's own hosted MCP server (issue #11) -- read-only tools (pipeline
+ * status, workflow/job detail, logs, artifacts, test results) the assistant
+ * may call directly, with no BYO configuration step: it authenticates with
+ * the same CircleCI API token the CLI plugin injects for every other
+ * CircleCI-backed feature in this app, so `available` is simply whether
+ * that token exists in this process. `reason` is populated exactly when
+ * `available` is `false` -- there is no "configured but currently broken"
+ * state to distinguish for this server the way the docs server's grounding
+ * can be (see `AiChatResponse.groundingReason`), so the pane can render
+ * `reason` unconditionally whenever `available` is `false`.
+ */
+export interface AiCircleCIStatus {
+  available: boolean;
+  reason?: string;
+}
+
 /** The JSON shape returned by `GET /api/ai/status`. */
 export interface AiStatusResponse {
   providers: AiProviderStatus[];
   storage: AiKeyStorage;
+  circleCI: AiCircleCIStatus;
 }
 
 export function getAiStatus(): Promise<AiStatusResponse> {
@@ -1451,6 +1469,16 @@ export interface AiChatResponse {
    * have quietly gone back to being recalled from training data.
    */
   groundingReason?: string;
+  /**
+   * Whether this reply had issue #11's CircleCI MCP tools available --
+   * independent of `grounded`, which is about the unrelated docs server.
+   * `false` means no CircleCI API token was available in this environment;
+   * `circleCIReason` names that. See `AiCircleCIStatus` for why, unlike
+   * `groundingReason`, this reason is not reserved for a rarer "configured
+   * but broken" case.
+   */
+  circleCIAvailable?: boolean;
+  circleCIReason?: string;
 }
 
 /** Sends `messages` (plus `context`) to `provider` via the host's proxy. The host holds the provider key; this call never sends or receives one. */

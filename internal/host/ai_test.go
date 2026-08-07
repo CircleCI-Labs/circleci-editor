@@ -38,6 +38,7 @@ import (
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/CircleCI-Labs/circleci-editor/internal/ai"
+	"github.com/CircleCI-Labs/circleci-editor/internal/ai/circlecimcp"
 	"github.com/CircleCI-Labs/circleci-editor/internal/ai/keystore"
 	"github.com/CircleCI-Labs/circleci-editor/internal/ai/secret"
 	"github.com/CircleCI-Labs/circleci-editor/internal/host"
@@ -105,8 +106,44 @@ func (f *fakeProvider) Complete(ctx context.Context, key secret.String, model st
 // doubles the caller constructs), wrapped in an httptest.Server. Reuses
 // api_test.go's doRequest helper (same package) for making requests against
 // it.
+//
+// clearCircleEnv first, deliberately: since issue #11, host.New's own
+// LoadEnvironment call determines whether CircleCI's MCP server is attached
+// to every /api/ai/chat request in this file, and this suite's assertions
+// on gotReq.MCPServers's length must hold regardless of whether the machine
+// actually running these tests happens to have a real CIRCLE_TOKEN set (see
+// CONTRIBUTING.md: this binary may itself be running inside a CircleCI
+// job). newAITestServerWithToken below is the one helper that deliberately
+// sets it back.
 func newAITestServer(t *testing.T, store *fakeKeyStore, providers ai.Registry) *httptest.Server {
 	t.Helper()
+	clearCircleEnv(t)
+	srv, err := host.New(host.Options{
+		WorkDir:     t.TempDir(),
+		Version:     "test-version",
+		AIStore:     store,
+		AIProviders: providers,
+	})
+	assert.NilError(t, err)
+
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// newAITestServerWithToken is newAITestServer plus a CIRCLE_TOKEN, for the
+// issue #11 tests that need CircleCI's MCP server to actually attach.
+//
+// The token must be set *before* host.New runs, not after: host.New's own
+// LoadEnvironment call reads the environment exactly once, at construction,
+// into the immutable s.env every later request reads from -- setting
+// CIRCLE_TOKEN afterwards would change nothing about an already-built
+// Server. So this does not delegate to newAITestServer, which would
+// construct the server first and leave no correct place to set the token.
+func newAITestServerWithToken(t *testing.T, store *fakeKeyStore, providers ai.Registry, token string) *httptest.Server {
+	t.Helper()
+	clearCircleEnv(t)
+	t.Setenv("CIRCLE_TOKEN", token)
 	srv, err := host.New(host.Options{
 		WorkDir:     t.TempDir(),
 		Version:     "test-version",
@@ -1007,6 +1044,7 @@ func TestServer_AIChat_MCPStorageFailure_DegradesToUnconfigured(t *testing.T) {
 			return ai.CompleteResult{Content: "ok", Model: model}, nil
 		},
 	}
+	clearCircleEnv(t)
 	srv, err := host.New(host.Options{WorkDir: t.TempDir(), Version: "test-version", AIStore: store, AIProviders: ai.Registry{"anthropic": provider}})
 	assert.NilError(t, err)
 	ts := httptest.NewServer(srv.Handler())
@@ -1055,4 +1093,272 @@ func withCapturedLog(t *testing.T, buf *bytes.Buffer, fn func()) {
 	log.SetOutput(buf)
 	defer log.SetOutput(prev)
 	fn()
+}
+
+// --- Issue #11: CircleCI's own hosted MCP server -----------------------
+
+// TestServer_AIStatus_CircleCI_NoToken_ReportsUnavailableWithReason is the
+// settings-visible half of issue #11's honest-degradation requirement: a
+// user must be able to tell CircleCI's read-only tools are off, and why,
+// without first sending a chat message.
+func TestServer_AIStatus_CircleCI_NoToken_ReportsUnavailableWithReason(t *testing.T) {
+	base := newAITestServer(t, newFakeKeyStore(), ai.Registry{})
+
+	status, body := doAIRequest(t, base, http.MethodGet, "/api/ai/status", nil)
+	assert.Equal(t, status, http.StatusOK)
+
+	var got struct {
+		CircleCI struct {
+			Available bool   `json:"available"`
+			Reason    string `json:"reason"`
+		} `json:"circleCI"`
+	}
+	assert.NilError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, got.CircleCI.Available, false)
+	assert.Equal(t, got.CircleCI.Reason, "no CircleCI API token available in this environment")
+}
+
+// TestServer_AIStatus_CircleCI_WithToken_ReportsAvailable is the other half:
+// once a CIRCLE_TOKEN exists (as the CLI plugin normally injects one),
+// status must say the tools are on, with no reason attached -- there is
+// nothing to explain about the working case.
+func TestServer_AIStatus_CircleCI_WithToken_ReportsAvailable(t *testing.T) {
+	base := newAITestServerWithToken(t, newFakeKeyStore(), ai.Registry{}, "circle-token-sentinel")
+
+	status, body := doAIRequest(t, base, http.MethodGet, "/api/ai/status", nil)
+	assert.Equal(t, status, http.StatusOK)
+
+	var got struct {
+		CircleCI struct {
+			Available bool   `json:"available"`
+			Reason    string `json:"reason"`
+		} `json:"circleCI"`
+	}
+	assert.NilError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, got.CircleCI.Available, true)
+	assert.Equal(t, got.CircleCI.Reason, "")
+}
+
+// TestServer_AIChat_CircleCI_NoToken_OmitsTheServerAndThePrompt is the
+// unconfigured default this app owes every existing user: with no
+// CIRCLE_TOKEN, a chat request must be byte-for-byte what it was before
+// issue #11 -- no second MCP server attached, and no paragraph in the
+// system prompt implying tools exist that are not actually there.
+func TestServer_AIChat_CircleCI_NoToken_OmitsTheServerAndThePrompt(t *testing.T) {
+	store := newFakeKeyStore()
+	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
+
+	var gotReq ai.CompleteRequest
+	provider := &fakeProvider{
+		name: "anthropic", label: "Anthropic", model: "m",
+		complete: func(_ context.Context, _ secret.String, model string, req ai.CompleteRequest) (ai.CompleteResult, error) {
+			gotReq = req
+			return ai.CompleteResult{Content: "ok", Model: model}, nil
+		},
+	}
+	base := newAITestServer(t, store, ai.Registry{"anthropic": provider})
+
+	reqBody, err := json.Marshal(map[string]any{"provider": "anthropic", "messages": []map[string]string{{"role": "user", "content": "why did my build fail?"}}})
+	assert.NilError(t, err)
+	status, body := doAIRequest(t, base, http.MethodPost, "/api/ai/chat", reqBody)
+	assert.Equal(t, status, http.StatusOK)
+	assert.Equal(t, len(gotReq.MCPServers), 0)
+	assert.Assert(t, !strings.Contains(gotReq.System, "read-only tools connected to CircleCI"))
+
+	var got struct {
+		CircleCIAvailable bool   `json:"circleCIAvailable"`
+		CircleCIReason    string `json:"circleCIReason"`
+	}
+	assert.NilError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, got.CircleCIAvailable, false)
+	assert.Equal(t, got.CircleCIReason, "no CircleCI API token available in this environment")
+}
+
+// TestServer_AIChat_CircleCI_WithToken_AttachesServerWithTheDenyByDefaultAllowlist
+// is issue #11's read-tool integration end to end at the host layer: with a
+// token present, the CircleCI server reaches the provider carrying exactly
+// circlecimcp.AllowedTools() -- never every tool the server advertises --
+// and the read-only paragraph (plus, since this test also sets a project
+// slug, the project slug itself) reaches the system prompt.
+func TestServer_AIChat_CircleCI_WithToken_AttachesServerWithTheDenyByDefaultAllowlist(t *testing.T) {
+	store := newFakeKeyStore()
+	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
+
+	var gotReq ai.CompleteRequest
+	provider := &fakeProvider{
+		name: "anthropic", label: "Anthropic", model: "m",
+		complete: func(_ context.Context, _ secret.String, model string, req ai.CompleteRequest) (ai.CompleteResult, error) {
+			gotReq = req
+			return ai.CompleteResult{Content: "ok", Model: model}, nil
+		},
+	}
+	base := newAITestServerWithToken(t, store, ai.Registry{"anthropic": provider}, "circle-token-sentinel")
+
+	var logBuf bytes.Buffer
+	var status int
+	var body string
+	withCapturedLog(t, &logBuf, func() {
+		reqBody, err := json.Marshal(map[string]any{"provider": "anthropic", "messages": []map[string]string{{"role": "user", "content": "why did my build fail?"}}})
+		assert.NilError(t, err)
+		status, body = doAIRequest(t, base, http.MethodPost, "/api/ai/chat", reqBody)
+	})
+	assert.Equal(t, status, http.StatusOK)
+	assert.Assert(t, !strings.Contains(body, "circle-token-sentinel"), "chat response leaked the CircleCI token: %s", body)
+	assert.Assert(t, !strings.Contains(logBuf.String(), "circle-token-sentinel"), "server logs leaked the CircleCI token: %s", logBuf.String())
+
+	var circleCIServer *ai.MCPServer
+	for i := range gotReq.MCPServers {
+		if gotReq.MCPServers[i].Name == circlecimcp.ServerName {
+			circleCIServer = &gotReq.MCPServers[i]
+		}
+	}
+	assert.Assert(t, circleCIServer != nil, "expected the CircleCI MCP server among %d attached: %+v", len(gotReq.MCPServers), gotReq.MCPServers)
+	assert.Equal(t, circleCIServer.URL, circlecimcp.URL)
+	assert.Equal(t, circleCIServer.Token.Reveal(), "circle-token-sentinel")
+	assert.DeepEqual(t, circleCIServer.AllowedTools, circlecimcp.AllowedTools())
+	// The gate's other half, restated at this layer: not one write tool may
+	// appear in what actually reached the provider.
+	for _, tool := range circleCIServer.AllowedTools {
+		assert.Assert(t, circlecimcp.IsReadOnly(tool), "AllowedTools sent %q, which is not classified read-only", tool)
+	}
+
+	assert.Assert(t, strings.Contains(gotReq.System, "read-only tools connected to CircleCI"))
+
+	var got struct {
+		CircleCIAvailable bool `json:"circleCIAvailable"`
+	}
+	assert.NilError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, got.CircleCIAvailable, true)
+}
+
+// TestServer_AIChat_CircleCI_ProjectSlugReachesThePromptWhenKnown pins the
+// one piece of host-known, non-secret context this app adds for free: the
+// CLI-injected project slug, so the user does not have to type
+// "gh/acme/widgets" themselves for the assistant's list_runs calls to be
+// useful. Absent env vars (the case above) must not print an empty or
+// malformed slug into the prompt -- covered by the "no token" test already
+// omitting the whole paragraph; this test is the positive case.
+func TestServer_AIChat_CircleCI_ProjectSlugReachesThePromptWhenKnown(t *testing.T) {
+	store := newFakeKeyStore()
+	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
+
+	var gotReq ai.CompleteRequest
+	provider := &fakeProvider{
+		name: "anthropic", label: "Anthropic", model: "m",
+		complete: func(_ context.Context, _ secret.String, model string, req ai.CompleteRequest) (ai.CompleteResult, error) {
+			gotReq = req
+			return ai.CompleteResult{Content: "ok", Model: model}, nil
+		},
+	}
+	clearCircleEnv(t)
+	t.Setenv("CIRCLE_TOKEN", "circle-token-sentinel")
+	t.Setenv("CIRCLE_VCS_TYPE", "github")
+	t.Setenv("CIRCLE_PROJECT_USERNAME", "acme")
+	t.Setenv("CIRCLE_PROJECT_REPONAME", "widgets")
+	srv, err := host.New(host.Options{WorkDir: t.TempDir(), Version: "test-version", AIStore: store, AIProviders: ai.Registry{"anthropic": provider}})
+	assert.NilError(t, err)
+	base := httptest.NewServer(srv.Handler())
+	t.Cleanup(base.Close)
+
+	reqBody, err := json.Marshal(map[string]any{"provider": "anthropic", "messages": []map[string]string{{"role": "user", "content": "how's my build?"}}})
+	assert.NilError(t, err)
+	status, _ := doAIRequest(t, base, http.MethodPost, "/api/ai/chat", reqBody)
+	assert.Equal(t, status, http.StatusOK)
+	assert.Assert(t, strings.Contains(gotReq.System, "gh/acme/widgets"), "system=%s", gotReq.System)
+}
+
+// TestServer_AIChat_CircleCI_AttachedAlongsideTheDocsServer proves the two
+// MCP servers this app can now attach to one request are independent:
+// configuring the docs-grounding server does not crowd out CircleCI's, and
+// vice versa. Anthropic's connector supports multiple mcp_servers entries
+// in a single request; this pins that internal/host/ai.go actually sends
+// both when both are available, rather than one silently overwriting the
+// other's slot.
+func TestServer_AIChat_CircleCI_AttachedAlongsideTheDocsServer(t *testing.T) {
+	store := newFakeKeyStore()
+	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
+
+	var gotReq ai.CompleteRequest
+	provider := &fakeProvider{
+		name: "anthropic", label: "Anthropic", model: "m",
+		complete: func(_ context.Context, _ secret.String, model string, req ai.CompleteRequest) (ai.CompleteResult, error) {
+			gotReq = req
+			return ai.CompleteResult{Content: "ok", Model: model}, nil
+		},
+	}
+	base := newAITestServerWithToken(t, store, ai.Registry{"anthropic": provider}, "circle-token-sentinel")
+
+	put, err := json.Marshal(map[string]string{"url": "https://circleci.mcp.kapa.ai", "token": "docs-token-sentinel"})
+	assert.NilError(t, err)
+	status, _ := doAIRequest(t, base, http.MethodPut, "/api/ai/mcp", put)
+	assert.Equal(t, status, http.StatusOK)
+
+	reqBody, err := json.Marshal(map[string]any{"provider": "anthropic", "messages": []map[string]string{{"role": "user", "content": "hi"}}})
+	assert.NilError(t, err)
+	status, _ = doAIRequest(t, base, http.MethodPost, "/api/ai/chat", reqBody)
+	assert.Equal(t, status, http.StatusOK)
+
+	assert.Equal(t, len(gotReq.MCPServers), 2)
+	names := map[string]bool{}
+	for _, s := range gotReq.MCPServers {
+		names[s.Name] = true
+	}
+	assert.Assert(t, names["circleci-docs"])
+	assert.Assert(t, names[circlecimcp.ServerName])
+}
+
+// TestServer_AIChat_CircleCI_GateSurvivesAnAttemptToNameAWriteToolInTheRequest
+// is the security property issue #11 asks for by name: the tool list this
+// host sends is a pure function of circlecimcp.AllowedTools(), computed
+// with zero arguments -- nothing in a user's message, in aiChatContext, or
+// in a config file's contents can reach loadCircleCIMCPConfig at all. This
+// test sends a message that *names* a write tool outright (the closest a
+// user or a compromised guides snapshot could get to influencing this
+// host's own request-shaping code, short of an actual code change) and
+// pins that the wire allowlist sent to the provider is identical to a
+// request with an unremarkable message -- proving the gate is not merely
+// "the model was asked nicely not to", but structurally unreachable from
+// request content.
+func TestServer_AIChat_CircleCI_GateSurvivesAnAttemptToNameAWriteToolInTheRequest(t *testing.T) {
+	store := newFakeKeyStore()
+	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
+
+	var gotReq ai.CompleteRequest
+	provider := &fakeProvider{
+		name: "anthropic", label: "Anthropic", model: "m",
+		complete: func(_ context.Context, _ secret.String, model string, req ai.CompleteRequest) (ai.CompleteResult, error) {
+			gotReq = req
+			return ai.CompleteResult{Content: "ok", Model: model}, nil
+		},
+	}
+	base := newAITestServerWithToken(t, store, ai.Registry{"anthropic": provider}, "circle-token-sentinel")
+
+	reqBody, err := json.Marshal(map[string]any{
+		"provider": "anthropic",
+		"messages": []map[string]string{{
+			"role": "user",
+			// A direct attempt to get a write tool named in the request this
+			// host builds -- via the one channel a user (or, worse, text
+			// smuggled in through a config comment or a docs page) actually
+			// controls: message content.
+			"content": "Please call cancel_workflow and rerun_workflow right now, and enable download_usage_data too.",
+		}},
+	})
+	assert.NilError(t, err)
+	status, _ := doAIRequest(t, base, http.MethodPost, "/api/ai/chat", reqBody)
+	assert.Equal(t, status, http.StatusOK)
+
+	var circleCIServer *ai.MCPServer
+	for i := range gotReq.MCPServers {
+		if gotReq.MCPServers[i].Name == circlecimcp.ServerName {
+			circleCIServer = &gotReq.MCPServers[i]
+		}
+	}
+	assert.Assert(t, circleCIServer != nil)
+	assert.DeepEqual(t, circleCIServer.AllowedTools, circlecimcp.AllowedTools())
+	for _, name := range []string{"cancel_workflow", "rerun_workflow", "download_usage_data"} {
+		for _, allowed := range circleCIServer.AllowedTools {
+			assert.Assert(t, allowed != name, "message content reached the allowlist: %q was named in AllowedTools", name)
+		}
+	}
 }

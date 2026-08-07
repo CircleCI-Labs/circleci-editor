@@ -15,6 +15,7 @@ const RESET_STATE = {
   statusState: 'loading' as const,
   providers: [],
   storage: null,
+  circleCI: null,
   statusError: null,
   selectedProvider: '',
   messages: [],
@@ -95,6 +96,7 @@ describe('aiStore', () => {
               },
             ],
             storage: { backend: 'keychain', location: 'macOS Keychain' },
+            circleCI: { available: true },
           }),
         ],
       });
@@ -109,6 +111,9 @@ describe('aiStore', () => {
         backend: 'keychain',
         location: 'macOS Keychain',
       });
+      // Issue #11: loadStatus carries the host's CircleCI MCP status
+      // through verbatim, the same way it already does for storage/providers.
+      expect(state.circleCI).toEqual({ available: true });
     });
 
     it('sets statusError on failure without touching providers', async () => {

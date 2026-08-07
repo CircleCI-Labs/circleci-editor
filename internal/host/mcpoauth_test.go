@@ -162,6 +162,10 @@ func writeOAuthTestJSON(w http.ResponseWriter, status int, doc map[string]any) {
 // fake authorization server.
 func newMCPOAuthTestServer(t *testing.T, store *fakeKeyStore, providers ai.Registry, f *fakeMCPAuthServer) *httptest.Server {
 	t.Helper()
+	// See newAITestServer's own doc comment (ai_test.go): issue #11 makes
+	// gotReq.MCPServers's length depend on the ambient CIRCLE_TOKEN unless
+	// cleared first.
+	clearCircleEnv(t)
 	srv, err := host.New(host.Options{
 		WorkDir:       t.TempDir(),
 		Version:       "test-version",

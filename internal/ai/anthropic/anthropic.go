@@ -206,14 +206,60 @@ type wireMCPServer struct {
 }
 
 // wireMCPToolset is one entry of wireRequest.Tools -- the MCP connector's
-// toolset shape. This provider only ever emits the simplest form (enable
-// every tool the named server advertises); DefaultConfig/Configs-style
-// allow/deny-listing is real API surface but not something any caller of
-// this package has needed yet, so it is left unmodelled rather than
-// speculatively wired.
+// toolset shape. DefaultConfig/Configs is the connector's own
+// allow/deny-listing mechanism (verified against
+// platform.claude.com/docs/en/agents-and-tools/mcp-connector on
+// 2026-08-07, current as of beta header mcp-client-2025-11-20): setting
+// DefaultConfig.Enabled=false and then an explicit Configs[name]={Enabled:
+// true} for each tool that should be reachable is the documented pattern
+// for "Denylist... recommended when building read-only assistants, or when
+// you want a human confirmation step before state changes" -- exactly
+// issue #11's requirement, and exactly what this package now builds for
+// any server whose ai.MCPServer.AllowedTools is non-nil (see Complete).
+// Both fields are omitted for a server with AllowedTools left nil (the
+// zero value), which reproduces the simplest form -- enable every tool the
+// server advertises -- byte-for-byte for every existing caller.
 type wireMCPToolset struct {
-	Type          string `json:"type"`
-	MCPServerName string `json:"mcp_server_name"`
+	Type          string                       `json:"type"`
+	MCPServerName string                       `json:"mcp_server_name"`
+	DefaultConfig *wireMCPToolConfig           `json:"default_config,omitempty"`
+	Configs       map[string]wireMCPToolConfig `json:"configs,omitempty"`
+}
+
+// wireMCPToolConfig is one entry of wireMCPToolset.Configs, or its
+// DefaultConfig. Enabled has no `omitempty`: unlike every other bool this
+// package sends, the false value here is meaningful and must reach the
+// wire -- an omitted DefaultConfig.Enabled would mean "enabled" (the
+// connector's own default), which is the exact opposite of what a
+// deny-by-default toolset requires.
+type wireMCPToolConfig struct {
+	Enabled bool `json:"enabled"`
+}
+
+// mcpToolset builds server's entry of wireRequest.Tools. AllowedTools left
+// nil (the zero value) produces the bare toolset every caller before issue
+// #11 already sent -- no DefaultConfig, no Configs, every tool the server
+// advertises enabled, byte-for-byte what this function returned before
+// AllowedTools existed. A non-nil AllowedTools -- even an empty one, a
+// legitimate "no tools at all" configuration -- switches to
+// deny-by-default: DefaultConfig.Enabled=false disables everything the
+// server advertises that this function does not go on to name, and each
+// entry of AllowedTools gets its own Configs[name]={Enabled:true}. There is
+// no code path here that could enable a tool AllowedTools does not name:
+// the loop below only ever writes an entry for a name already in
+// AllowedTools, never reads anything from the request, the model's reply,
+// or the server's own tools/list response.
+func mcpToolset(server ai.MCPServer) wireMCPToolset {
+	toolset := wireMCPToolset{Type: mcpToolsetType, MCPServerName: server.Name}
+	if server.AllowedTools == nil {
+		return toolset
+	}
+	toolset.DefaultConfig = &wireMCPToolConfig{Enabled: false}
+	toolset.Configs = make(map[string]wireMCPToolConfig, len(server.AllowedTools))
+	for _, name := range server.AllowedTools {
+		toolset.Configs[name] = wireMCPToolConfig{Enabled: true}
+	}
+	return toolset
 }
 
 // wireContentBlock is one entry of a successful response's "content"
@@ -281,7 +327,7 @@ func (c *Client) Complete(ctx context.Context, key secret.String, model string, 
 			Name:               server.Name,
 			AuthorizationToken: server.Token.Reveal(), // justified the same way key.Reveal() below is: this becomes a field of the one outgoing HTTPS request this provider builds, and nowhere else.
 		})
-		wireReq.Tools = append(wireReq.Tools, wireMCPToolset{Type: mcpToolsetType, MCPServerName: server.Name})
+		wireReq.Tools = append(wireReq.Tools, mcpToolset(server))
 	}
 
 	body, err := json.Marshal(wireReq)
