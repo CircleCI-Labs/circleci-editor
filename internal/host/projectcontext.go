@@ -108,14 +108,17 @@ type projectPayload struct {
 	// WebURL deep-links to this project's pipelines in the CircleCI web UI,
 	// built from Slug above rather than from CIRCLE_VCS_TYPE (issue #182).
 	//
-	// Empty means this project has no name-addressed web page: its canonical
-	// slug is `circleci/<org-id>/<project-id>`, which is what GitLab and GitHub
-	// App projects get. A client must render the identity as plain text in that
-	// case and must **not** fall back to metaResponse.ProjectWebURL -- that
-	// value is derived from injected environment variables that can still name
-	// a VCS type ("github") whose URL shape this project does not use, which is
-	// exactly the wrong-path defect issue #182 reports. Absent is authoritative
-	// here precisely because the project record is.
+	// Present for a standalone (GitLab / GitHub App) project too, as of issue
+	// #20: its canonical slug is `circleci/<org-id>/<project-id>`, which fits
+	// the same route gh/bb projects use once Environment.ProjectWebURLForSlug
+	// is willing to build it (see overviewRouteVCS). Empty is now the rarer
+	// case -- a slug this host still could not turn into a URL at all -- and a
+	// client must render the identity as plain text then, never falling back to
+	// metaResponse.ProjectWebURL: that value is derived from injected
+	// environment variables that can still name a VCS type ("github") whose URL
+	// shape this project does not use, which is the wrong-path defect issue
+	// #182 reports. Absent is authoritative here precisely because the project
+	// record is.
 	WebURL string `json:"webUrl,omitempty"`
 
 	// SettingsURL deep-links to this project's *settings* page in the CircleCI
@@ -124,7 +127,23 @@ type projectPayload struct {
 	// can easily click them and go to the UI to edit things." Built the same
 	// way and with the same emptiness contract as WebURL; see
 	// Environment.ProjectSettingsWebURLForSlug.
+	//
+	// Unlike WebURL, this one is *not* extended to standalone projects by issue
+	// #20: ProjectSettingsWebURLForSlug's route was never checked against a
+	// live standalone project, only the overview and organization-pipelines
+	// routes were (see overviewRouteVCS), so this stays empty for a
+	// `circleci/<org-id>/<project-id>` slug until that changes too.
 	SettingsURL string `json:"settingsUrl,omitempty"`
+
+	// OrganizationWebURL deep-links to this project's organization in the
+	// CircleCI web UI -- the pipelines page for the whole organization, built
+	// from OrganizationSlug (issue #20's second item: the top bar's
+	// "<organization>/<project>" label linked only the project, because no
+	// organization-level route had been verified). Same emptiness contract as
+	// WebURL: empty when OrganizationSlug is empty or names a VCS type
+	// overviewRouteVCS does not accept, and a client must render the
+	// organization's name as plain text then. See Environment.OrgWebURLForSlug.
+	OrganizationWebURL string `json:"organizationWebUrl,omitempty"`
 }
 
 // projectSettingsPayload is the JSON shape of
@@ -229,6 +248,28 @@ type warningPayload struct {
 	// not recognise -- and populated with the CircleCI CLI's own words rather
 	// than this host's. See projectBindingSuggestions.
 	Suggestions []string `json:"suggestions,omitempty"`
+
+	// Candidates lists other repository names visible to this token in the
+	// same organization and on the same VCS as the slug that just 404'd
+	// (issue #20). Populated only for Kind == warningKindProject on a 404 --
+	// see projectNearMissCandidates.
+	//
+	// This host deliberately does not decide *which* of them, if any, is a
+	// near miss of the slug that failed: that reasoning already exists, in
+	// `nearestUnique` (web/src/lib/validation/editDistance.ts), which
+	// `suggestions.ts` uses for exactly this "within a typo's distance of
+	// exactly one candidate" judgment call about a misspelled config key. This
+	// field hands the client the raw, honestly-scoped list -- never wider than
+	// "other projects this token can see in this organization" -- and lets
+	// that one piece of edit-distance logic decide, rather than growing a
+	// second copy of it here.
+	//
+	// Empty either because there is no near-miss candidate, or because the
+	// lookup that would have found one itself failed (see
+	// projectNearMissCandidates): both must render as "no suggestion", never as
+	// "checked, and there is definitely no near miss" -- this host is not
+	// asserting the latter.
+	Candidates []string `json:"candidates,omitempty"`
 }
 
 // projectContextResponse is the JSON shape returned by
@@ -540,17 +581,27 @@ func (s *Server) fetchProjectContext(ctx context.Context, identity ProjectIdenti
 	project, projectErr := client.GetProject(ctx, slug)
 	if projectErr != nil {
 		logUpstreamFailure("look up project "+slug, projectErr)
-		resp.Warnings = append(resp.Warnings, projectLookupWarning(projectErr, slug, identity))
+		warning := projectLookupWarning(projectErr, slug, identity)
+		// The near-miss suggestion (issue #20) only makes sense for a genuine
+		// 404 -- every other failure here is about the network, the token or
+		// CircleCI itself, not about the slug, and spending a second upstream
+		// call chasing a typo theory for a 401 would be a waste at best and a
+		// confusing distraction at worst.
+		if circleci.IsNotFound(projectErr) {
+			warning.Candidates = s.projectNearMissCandidates(ctx, slug)
+		}
+		resp.Warnings = append(resp.Warnings, warning)
 	} else {
 		resp.Project = &projectPayload{
-			Name:             project.Name,
-			Slug:             project.Slug,
-			OrganizationName: project.OrganizationName,
-			OrganizationSlug: project.OrganizationSlug,
-			VCSProvider:      project.VCSProvider,
-			DefaultBranch:    project.DefaultBranch,
-			WebURL:           s.env.ProjectWebURLForSlug(canonicalSlug(project, slug)),
-			SettingsURL:      s.env.ProjectSettingsWebURLForSlug(canonicalSlug(project, slug)),
+			Name:               project.Name,
+			Slug:               project.Slug,
+			OrganizationName:   project.OrganizationName,
+			OrganizationSlug:   project.OrganizationSlug,
+			VCSProvider:        project.VCSProvider,
+			DefaultBranch:      project.DefaultBranch,
+			WebURL:             s.env.ProjectWebURLForSlug(canonicalSlug(project, slug)),
+			SettingsURL:        s.env.ProjectSettingsWebURLForSlug(canonicalSlug(project, slug)),
+			OrganizationWebURL: s.env.OrgWebURLForSlug(project.OrganizationSlug),
 		}
 	}
 
@@ -721,6 +772,61 @@ func canonicalSlug(project *circleci.Project, requested string) string {
 		return project.Slug
 	}
 	return requested
+}
+
+// projectNearMissCandidates returns the repository names of other projects
+// visible to this token, on the same VCS and in the same organization as
+// slug, for a client to compare against the repository name that just 404'd
+// (issue #20's near-miss suggestion). See warningPayload.Candidates for what
+// a caller may and may not infer from the result.
+//
+// canonicalSlug's own doc comment states the rule this function is careful
+// not to violate: "What this function must never do is *substitute* a
+// different project." This function does not -- it returns a list, decides
+// nothing, and the actual "is this close enough to be a typo" judgment stays
+// where that reasoning already lives, client-side in `nearestUnique`.
+//
+// Two guards keep the scope honest rather than merely small:
+//
+//   - Only ever called after a confirmed 404 (see the call site in
+//     fetchProjectContext), never for a slug this host has not actually asked
+//     CircleCI about.
+//   - Skipped outright for a "circleci/<org-id>/<project-id>" slug: the v1.1
+//     API this method calls predates GitHub App and GitLab standalone
+//     projects, and has no record shaped like one to compare against. Spending
+//     the round trip would only ever come back empty.
+//
+// A failure to list is swallowed rather than turned into a second warning: the
+// 404's own Headline and Detail are already a complete, honest message without
+// a near-miss suggestion, and this is a best-effort enhancement to it, not a
+// claim this host is making about anything. It is still logged, on the same
+// "nothing upstream fails silently" rule every other call in this file
+// follows.
+func (s *Server) projectNearMissCandidates(ctx context.Context, slug string) []string {
+	segments := strings.Split(slug, "/")
+	if len(segments) != 3 {
+		return nil
+	}
+	vcs := CanonicalVCSSegment(segments[0])
+	org := segments[1]
+	if vcs == "" || vcs == "circleci" || org == "" {
+		return nil
+	}
+
+	projects, err := s.projectClient.ListFollowedProjects(ctx)
+	if err != nil {
+		logUpstreamFailure("list projects visible to this token, for a near-miss suggestion on "+slug, err)
+		return nil
+	}
+
+	var candidates []string
+	for _, p := range projects {
+		if CanonicalVCSSegment(p.VCSType) != vcs || !strings.EqualFold(p.Org, org) {
+			continue
+		}
+		candidates = append(candidates, p.Repo)
+	}
+	return candidates
 }
 
 // handleProjectContextVariables serves

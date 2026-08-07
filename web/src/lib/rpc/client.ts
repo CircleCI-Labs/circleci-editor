@@ -43,6 +43,28 @@ export interface Meta {
   projectWebUrl?: string;
 
   /**
+   * Deep link to this project's *organization* in the CircleCI web UI (issue
+   * #20), built the same way and available on the same terms as
+   * `projectWebUrl` above: from the CLI-injected environment alone, no token
+   * and no request needed.
+   *
+   * The top bar shows "<organization>/<project>" as one label linking only to
+   * the project; this is what lets the organization half be its own link
+   * instead.
+   *
+   * Absent when there is no organization slug, or when the VCS type is one
+   * whose organization page this host still cannot address (see
+   * `overviewRouteVCS` on the host side). Absent means "show the
+   * organization's name without a link", never "there is no organization".
+   *
+   * Superseded by `ProjectSummary.organizationWebUrl` once the project record
+   * has loaded, on the same terms `projectWebUrl` is superseded by
+   * `ProjectSummary.webUrl`: that one is built from CircleCI's own
+   * `organizationSlug`, this one from an assumed VCS type.
+   */
+  orgWebUrl?: string;
+
+  /**
    * The branch to show, and where it came from (issue #214).
    *
    * Two sources can disagree: `CIRCLE_BRANCH` from the CLI-injected
@@ -1538,11 +1560,14 @@ export interface ProjectSummary {
    * from `slug` above (issue #214 moved it there from the pipelines page: the
    * overview is a hub you can navigate onward from).
    *
-   * Absent means this project has no name-addressed web page: its canonical
-   * slug is `circleci/<org-id>/<project-id>`, which is what GitLab and GitHub
-   * App projects get. Render the identity as plain text then, and do **not**
-   * fall back to `Meta.projectWebUrl` -- that URL is derived from an assumed
-   * VCS type and would point at a page shaped for a different kind of project.
+   * Present for a standalone (GitLab / GitHub App) project too, as of issue
+   * #20: its canonical slug is `circleci/<org-id>/<project-id>`, and that
+   * route's shape was verified live against a real one -- the opaque IDs
+   * simply occupy the segments a name would. Absent is now the rarer case: a
+   * slug this host still could not turn into a URL. Render the identity as
+   * plain text then, and do **not** fall back to `Meta.projectWebUrl` -- that
+   * URL is derived from an assumed VCS type and would point at a page shaped
+   * for a different kind of project.
    */
   webUrl?: string;
 
@@ -1554,10 +1579,24 @@ export interface ProjectSummary {
    * `webUrl`, from the same slug, one path segment different -- see
    * `Environment.ProjectSettingsWebURLForSlug`.
    *
-   * Same emptiness contract as `webUrl`: absent means no name-addressed page,
-   * render plain text.
+   * Same emptiness contract as `webUrl`: absent means no page this host has
+   * verified how to address, render plain text. Unlike `webUrl`, this one was
+   * **not** extended to standalone projects by issue #20 -- that route's shape
+   * was never itself checked against a live one, only the overview and
+   * organization-pipelines routes were.
    */
   settingsUrl?: string;
+
+  /**
+   * This project's *organization* overview in the CircleCI web UI (issue
+   * #20's second item), built host-side from `organizationSlug` above. Same
+   * emptiness contract as `webUrl`: absent means this host still cannot
+   * address the organization's page, render its name as plain text.
+   *
+   * Supersedes `Meta.orgWebUrl` once this record exists, on the same terms
+   * `webUrl` supersedes `Meta.projectWebUrl`.
+   */
+  organizationWebUrl?: string;
 }
 
 /** The project settings that change how a config behaves. */
@@ -1649,6 +1688,25 @@ export interface ProjectContextWarning {
    * documentation rather than this app's.
    */
   suggestions?: string[];
+  /**
+   * Other repository names visible to this token, in the same organization
+   * and on the same VCS as the slug that just 404'd (issue #20). Populated
+   * only for `kind === 'project'` on a 404.
+   *
+   * The host deliberately does not decide *which* of these, if any, is a near
+   * miss of the slug that failed -- that reasoning already exists, in
+   * `nearestUnique` (`~/lib/validation/editDistance`), which `suggestions.ts`
+   * uses for exactly this "within a typo's distance of exactly one candidate"
+   * judgment about a misspelled config key. See `projectNearMiss`, which
+   * applies it here.
+   *
+   * Never wider than "other projects this token can see in this
+   * organization", so a candidate here is, by construction, one the user can
+   * see. Absent either because there is no such project, or because the
+   * lookup itself failed -- both must render as "no suggestion", never as "we
+   * checked, and there is definitely no near miss".
+   */
+  candidates?: string[];
 }
 
 /**

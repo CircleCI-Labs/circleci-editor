@@ -32,6 +32,7 @@ import {
   type ProjectSummary,
   type ProjectVariableSummary,
 } from '~/lib/rpc/client';
+import { nearestUnique } from '~/lib/validation/editDistance';
 
 /**
  * The project-metadata state machine.
@@ -468,6 +469,40 @@ export function projectLookup(
   }
 
   return { status: 'unknown', warning: null, reason: null };
+}
+
+/**
+ * The near-miss project suggestion for a 404'd lookup (issue #20): the one
+ * other repository name, among those the host reported as visible to this
+ * token in the same organization, within a typo's distance of the repository
+ * name that failed to resolve.
+ *
+ * `triedSlug` is the slug the lookup actually 404'd on -- `canonicalSlug`'s own
+ * rule applies here too, so this must be the requested slug, never a
+ * substitution. Only the repository name (the slug's last segment) is
+ * compared: `warning.candidates` is already scoped to the same organization
+ * and VCS by the host (see `warningPayload.Candidates`), so the organization
+ * half of the slug carries no information a typo check needs.
+ *
+ * Reuses `nearestUnique` -- the same "within a typo's distance of exactly one
+ * candidate" rule `suggestions.ts` already applies to a misspelled top-level
+ * config key -- rather than re-deriving that reasoning here. Its three
+ * conditions are exactly the care issue #20 asks for: decline when the
+ * distance is too large (the repository genuinely is not set up), when the
+ * words are too short to compare meaningfully, or when two candidates tie
+ * (ambiguity is not a suggestion).
+ */
+export function projectNearMiss(
+  warning: ProjectContextWarning | null | undefined,
+  triedSlug: string,
+): string | undefined {
+  const candidates = warning?.candidates;
+  if (!candidates || candidates.length === 0) return undefined;
+
+  const repo = triedSlug.split('/').pop();
+  if (!repo) return undefined;
+
+  return nearestUnique(repo, candidates);
 }
 
 /** Resets the store between tests. */

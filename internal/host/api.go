@@ -79,6 +79,27 @@ type metaResponse struct {
 	// empty, which means "this project has no name-addressed web page".
 	ProjectWebURL string `json:"projectWebUrl,omitempty"`
 
+	// OrgWebURL deep-links to this project's organization in the CircleCI web
+	// UI (issue #20): the top bar showed "<organization>/<project>" with the
+	// whole label linking to the project alone, because no organization-level
+	// route had been verified. Built the same way, and available for the same
+	// reason, as ProjectWebURL above -- from the CLI-injected environment
+	// alone, so it needs no token and costs no request.
+	//
+	// Empty when there is no organization slug to build from -- see
+	// Environment.OrgSlug -- or when its VCS type is one this host still
+	// cannot build an organization URL for (see overviewRouteVCS). A client
+	// must treat empty as "render the organization's name as text", never as
+	// "there is no organization".
+	//
+	// Superseded, once GET /api/project-context has returned a project record,
+	// by that record's own `project.organizationWebUrl`, on the same terms
+	// ProjectWebURL is superseded by `project.webUrl`: the record's
+	// OrganizationSlug is CircleCI's own, this one is assembled from an assumed
+	// VCS type, and a client that has a record must prefer the record's field
+	// even when it is empty.
+	OrgWebURL string `json:"orgWebUrl,omitempty"`
+
 	// Branch is the branch to *show* (issue #214), and BranchSource says where
 	// it came from: "checkout" for the working tree's own HEAD, "environment"
 	// for CIRCLE_BRANCH. The checkout wins when both are available, because the
@@ -333,6 +354,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		Host:              s.env.Host,
 		Cwd:               s.opts.WorkDir,
 		ProjectWebURL:     s.env.ProjectWebURLForSlug(identity.Slug),
+		OrgWebURL:         s.env.OrgWebURLForSlug(identity.OrgSlug()),
 		Branch:            branch,
 		BranchSource:      branchSource,
 		EnvBranch:         s.env.Branch,

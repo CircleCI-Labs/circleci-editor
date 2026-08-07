@@ -275,6 +275,8 @@ export interface ProjectContextWarningStub {
   headline: string;
   detail?: string;
   consequences?: string[];
+  /** Other repository names visible to this token, for the near-miss suggestion (issue #20). */
+  candidates?: string[];
 }
 
 /**
@@ -307,6 +309,13 @@ export interface ProjectContextStub {
      * project, for the same reason.
      */
     settingsUrl?: string;
+    /**
+     * The organization half of issue #20's link pair, built by the host from
+     * `organizationSlug` above. Omit it to stub a VCS shape this host has no
+     * verified organization page for -- independently of `webUrl`, since the
+     * two supersede the environment's own guesses separately.
+     */
+    organizationWebUrl?: string;
   };
   settings?: {
     dynamicConfig: boolean;
@@ -337,6 +346,7 @@ const PROJECT_CONTEXT_STUB: ProjectContextStub = {
     defaultBranch: 'main',
     webUrl: 'https://app.circleci.com/projects/gh/example/widgets',
     settingsUrl: 'https://app.circleci.com/settings/project/gh/example/widgets',
+    organizationWebUrl: 'https://app.circleci.com/pipelines/gh/example',
   },
   settings: {
     dynamicConfig: false,
@@ -382,6 +392,13 @@ export interface MockHostApiOptions {
    * whose web pages a slug cannot address, where the host sends none.
    */
   projectWebUrl?: string;
+  /**
+   * Overrides the organization deep link `GET /api/meta` carries (issue #20).
+   * Defaults to the CircleCI web UI pipelines URL for `projectSlug`'s own
+   * `<vcs>/<org>` prefix; pass `''` for a VCS type this host has no verified
+   * organization page for.
+   */
+  orgWebUrl?: string;
   /** Overrides the stubbed `GET /api/project-context/variables` body (issue #105). Ignored when `hasToken` is false. */
   contextVariables?: typeof CONTEXT_VARIABLES_STUB;
   /**
@@ -497,6 +514,15 @@ export async function mockHostApi(
   const projectWebUrl =
     options.projectWebUrl ??
     (projectSlug ? `https://app.circleci.com/projects/${projectSlug}` : '');
+  // Same derivation, one path segment and one fewer slug segments different --
+  // see `Environment.OrgWebURLForSlug` on the host side for the route and how
+  // it was verified (issue #20).
+  const orgSlugPrefix = projectSlug.split('/').slice(0, 2).join('/');
+  const orgWebUrl =
+    options.orgWebUrl ??
+    (orgSlugPrefix
+      ? `https://app.circleci.com/pipelines/${orgSlugPrefix}`
+      : '');
   const git = options.git ?? META_GIT_STUB;
 
   let currentConfig = options.config ?? FIXTURE_CONFIG;
@@ -578,6 +604,7 @@ export async function mockHostApi(
         // logic to have something to attach.
         csrfToken: 'e2e-test-csrf-token',
         projectWebUrl,
+        orgWebUrl,
         ...git,
       },
     });
