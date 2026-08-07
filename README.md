@@ -2,7 +2,13 @@
 
 A visual, drag-and-drop editor for your `.circleci/config.yml`.
 
-[Contributing](./CONTRIBUTING.md) | [Code of Conduct](./CODE_OF_CONDUCT.md)
+### 📖 New here? Start with the **[Getting Started guide](./docs/GETTING-STARTED.md)**
+
+It takes you from nothing installed to confidently editing a real config — on
+macOS, Linux or Windows — with a tour of the panes and recipes for the tasks
+people actually do. This README is the reference; that guide is the walkthrough.
+
+[Getting started](./docs/GETTING-STARTED.md) | [Installation](./docs/INSTALL.md) | [Contributing](./CONTRIBUTING.md) | [Code of Conduct](./CODE_OF_CONDUCT.md)
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/CircleCI-Labs/circleci-editor.svg)](https://pkg.go.dev/github.com/CircleCI-Labs/circleci-editor)
 [![License](https://img.shields.io/badge/license-MIT-red.svg)](./LICENSE)
@@ -89,6 +95,11 @@ Searching the orb registry from the Palette pane:
 
 ## Installation
 
+> Installing for the first time? The
+> **[Getting Started guide](./docs/GETTING-STARTED.md)** covers install, token
+> setup and your first edit in order, with Windows steps. The sections below are
+> the reference.
+
 Running a released binary requires nothing beyond the binary itself; building
 from source requires Go 1.26, Node 22, [pnpm](https://pnpm.io/), and
 [go-task](https://taskfile.dev/) — see [Development](#development) below.
@@ -134,6 +145,10 @@ plugin, and you can invoke it as `circleci editor` instead of
 `circleci-editor`.
 
 ## Quick start
+
+> For a fuller walkthrough — what each pane is for, how to add an orb, attach a
+> context, or right-size a job — see the
+> **[Getting Started guide](./docs/GETTING-STARTED.md)**.
 
 From the root of a repository that already has a `.circleci/config.yml`:
 
