@@ -97,6 +97,23 @@ type Options struct {
 	// OpenURL) rather than a normal browser tab.
 	AppMode bool
 
+	// CacheDir overrides where this host's persisted caches live. Empty means
+	// orbs.DefaultCacheDir, which is the XDG cache directory -- the right
+	// default for a real run, where one cache root shared by every feature is
+	// exactly what is wanted.
+	//
+	// It exists because tests need a cache directory *per server*, and the
+	// environment cannot give them one. XDG_CACHE_HOME is process-wide, and
+	// nine tests in this package call t.Parallel(), so a t.Setenv in one test
+	// changes the directory that a concurrently-running test's caches resolve
+	// to. That is not a theoretical race: it kept two tests asserting on
+	// vendored, embedded data failing intermittently in CI even after their
+	// helper began setting XDG_CACHE_HOME, because the flag protects the test
+	// that sets it and not the ones running alongside it. Passing the
+	// directory in as data removes the shared mutable state instead of timing
+	// around it.
+	CacheDir string
+
 	// Debug turns on this host's progress and bookkeeping output (issue
 	// #216). Off by default, which is the point: without it the terminal
 	// shows the CLI's startup banner and then nothing until something
@@ -480,6 +497,17 @@ type Server struct {
 	mcpAuthOverride *mcpauth.Client
 }
 
+// cacheDir resolves where persisted caches live for this host: Options.CacheDir
+// when set, otherwise the shared XDG default. Centralised so that every cache
+// this server builds agrees, and so an override cannot be honoured by some of
+// them and missed by others.
+func (o Options) cacheDir() (string, error) {
+	if o.CacheDir != "" {
+		return o.CacheDir, nil
+	}
+	return orbs.DefaultCacheDir()
+}
+
 // New constructs a Server from opts. It resolves the config file to edit
 // (tolerating the case where none exists yet) and loads the CircleCI CLI
 // plugin environment, but does not bind a listener; call Run to start
@@ -572,7 +600,7 @@ func New(opts Options) (*Server, error) {
 	// orbs.DefaultCacheDir).
 	dockerTagsCacheImpl := opts.DockerTagsCache
 	if dockerTagsCacheImpl == nil {
-		cacheDir, dirErr := orbs.DefaultCacheDir()
+		cacheDir, dirErr := opts.cacheDir()
 		if dirErr != nil {
 			debugf("warning: failed to resolve cache directory, docker image tag lookups will not persist across runs: %v", dirErr)
 		}
@@ -590,7 +618,7 @@ func New(opts Options) (*Server, error) {
 	// tokenless host can skip building at all.
 	offeringsCacheImpl := opts.OfferingsCache
 	if offeringsCacheImpl == nil {
-		cacheDir, dirErr := orbs.DefaultCacheDir()
+		cacheDir, dirErr := opts.cacheDir()
 		if dirErr != nil {
 			debugf("warning: failed to resolve cache directory, the machine-image catalog will not persist across runs: %v", dirErr)
 		}
@@ -615,7 +643,7 @@ func New(opts Options) (*Server, error) {
 	guidesCacheImpl := opts.GuidesCache
 	var guidesWarmer cacheWarmer
 	if guidesCacheImpl == nil {
-		cacheDir, dirErr := orbs.DefaultCacheDir()
+		cacheDir, dirErr := opts.cacheDir()
 		if dirErr != nil {
 			debugf("warning: failed to resolve cache directory, refreshed documentation guides will not persist across runs: %v", dirErr)
 		}
@@ -770,7 +798,7 @@ func buildCircleCIClients(
 		// Debug, not a notice: a cache that cannot persist still searches
 		// correctly on every run, so this names a slower startup rather than
 		// something the user has to fix.
-		cacheDir, dirErr := orbs.DefaultCacheDir()
+		cacheDir, dirErr := opts.cacheDir()
 		if dirErr != nil {
 			debugf("warning: failed to resolve orb cache directory, orb search will not persist across runs: %v", dirErr)
 		}
@@ -788,7 +816,7 @@ func buildCircleCIClients(
 		// failure is: a usage cache that cannot persist to disk still warms
 		// and searches correctly for the life of this process, so this names
 		// a slower cold start on next launch, not something to fix now.
-		cacheDir, dirErr := orbs.DefaultCacheDir()
+		cacheDir, dirErr := opts.cacheDir()
 		if dirErr != nil {
 			debugf("warning: failed to resolve cache directory, usage suggestions will not persist across runs: %v", dirErr)
 		}
