@@ -219,13 +219,17 @@ jobs:
 
   validate-own-config:
     executor: linux
-    # Issue #15: this job used to be a single token-gated step, so a fork PR
-    # (no CIRCLE_TOKEN -- CircleCI does not share context secrets with PRs
-    # from forks) got no config validation at all, silently. It is now two
-    # layers, deliberately in this order: the offline check first, because
-    # it is the one every PR actually gets and it costs nothing to run
-    # before touching the network; the API-backed check second, because it
-    # is strictly stronger when it can run, but is the one that may not.
+    # Issue #15: this job used to be a single token-gated step. No context
+    # or project environment variable actually supplies CIRCLE_TOKEN to this
+    # job today (verified: a same-repo, non-fork build still sees none), so
+    # that step was a no-op skip on *every* build, not just fork PRs -- and
+    # a fork PR could never get anything else, since CircleCI does not share
+    # context secrets with pull requests from forks even once a token
+    # exists. Two layers now, deliberately in this order: the offline check
+    # first, because it is the one every build actually gets today and
+    # costs nothing to run before touching the network; the API-backed
+    # check second, because it would be strictly stronger the day a token
+    # is wired up for non-fork builds, but is the one that may never run.
     steps:
       - checkout
       - restore-go-cache
@@ -258,18 +262,25 @@ jobs:
           # renovate.json5's customManagers): a bump always arrives as its
           # own reviewable PR, never silently.
           #
-          # A token cannot simply be added: CircleCI does not share context
-          # secrets with pull requests from forks, so a token-gated step here
-          # would fail every outside contributor's first PR. That is the wrong
-          # trade for a public repository, and no read-only CircleCI API context
-          # exists to use anyway (`devex-release` is write-scoped and is
-          # deliberately kept away from fork-facing jobs).
+          # A token cannot simply be added as a context: CircleCI does not
+          # share context secrets with pull requests from forks, so a
+          # context-gated step here would fail every outside contributor's
+          # first PR. That is the wrong trade for a public repository, and
+          # no read-only CircleCI API context exists to use anyway
+          # (`devex-release` is write-scoped and is deliberately kept away
+          # from fork-facing jobs). A project-level environment variable
+          # (Project Settings, not a context) would reach non-fork builds
+          # without that problem -- CircleCI's default, secure setting
+          # withholds those from fork PRs too -- but none is configured for
+          # CIRCLE_TOKEN today, which is why this step currently skips on
+          # every build, this PR's own included; see this job's comment
+          # above for how that was confirmed.
           #
           # So: validate when a token happens to be available, and say
           # loudly why it was skipped when one is not -- a green step here
           # must never be mistaken for "this config was fully validated"
           # when the step above is the only thing that actually ran.
-          name: "Full validate via the CircleCI API (needs a token; loudly skipped on fork PRs)"
+          name: "Full validate via the CircleCI API (needs a token; currently always skipped -- see comment above)"
           environment:
             CIRCLECI_CLI_VERSION: "1.0.47471"
           command: |
@@ -277,9 +288,13 @@ jobs:
               echo "################################################################"
               echo "# SKIPPED -- NOT VALIDATED against the CircleCI API."
               echo "#"
-              echo "# No CIRCLE_TOKEN is available on this build. Expected on a fork"
-              echo "# PR (CircleCI does not share context secrets with pull requests"
-              echo "# from forks); unexpected anywhere else."
+              echo "# No CIRCLE_TOKEN is available on this build. As of this writing"
+              echo "# that is true of every build of this job, not just fork PRs --"
+              echo "# no context or project environment variable currently supplies"
+              echo "# one (see this job's own comment above). If that changes, fork"
+              echo "# PRs specifically will keep skipping this step regardless:"
+              echo "# CircleCI does not share project secrets with pull requests"
+              echo "# from forks."
               echo "#"
               echo "# This step normally submits the config to"
               echo "# compile-config-with-defaults, which resolves orbs and"
