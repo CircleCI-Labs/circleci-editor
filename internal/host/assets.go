@@ -38,7 +38,7 @@ import (
 // the server reverse-proxy all non-API requests to that URL instead of
 // serving the embedded SPA assets. This is intended for local development
 // against the Vite dev server.
-const devProxyEnvVar = "VCE_DEV_PROXY"
+const devProxyEnvVar = "CIRCLECI_EDITOR_DEV_PROXY"
 
 // indexPath is the SPA entry point served for the root path and as the
 // fallback for unmatched client-routed paths.
@@ -120,7 +120,7 @@ func setCacheControl(w http.ResponseWriter, cleanedPath string) {
 
 // newDevProxyHandler returns a handler that reverse-proxies all requests to
 // target, for use against a running Vite dev server. target comes only from
-// the developer-controlled VCE_DEV_PROXY environment variable, never from a
+// the developer-controlled CIRCLECI_EDITOR_DEV_PROXY environment variable, never from a
 // request, so this is local developer tooling rather than an SSRF vector.
 func newDevProxyHandler(target string) (http.Handler, error) {
 	targetURL, err := url.Parse(target)

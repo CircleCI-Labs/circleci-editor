@@ -326,7 +326,7 @@ func TestServer_AIKey_Delete_RemovesAConfiguredKey(t *testing.T) {
 // is issue #7's core repro: DELETE always deletes from the store (that half
 // was never broken -- the store really does end up empty), but the response
 // used to hardcode Configured=false regardless of what was actually still in
-// effect. With VCE_AI_KEY_ANTHROPIC set, the key remains fully usable after
+// effect. With CIRCLECI_EDITOR_AI_KEY_ANTHROPIC set, the key remains fully usable after
 // this call, and the response must say so -- exactly the "a control that
 // reports success and changes nothing" failure the issue names, now fixed by
 // reporting the true post-delete state instead of assuming one.
@@ -361,7 +361,7 @@ func TestServer_AIKey_Delete_HonestlyReportsStillConfigured_WhenEnvVarShadowsThe
 }
 
 // TestServer_AIKey_Put_ReportsShadowed_WhenEnvVarAlreadySet is PUT's half of
-// the same honesty rule: storing a key while VCE_AI_KEY_ANTHROPIC is set
+// the same honesty rule: storing a key while CIRCLECI_EDITOR_AI_KEY_ANTHROPIC is set
 // really does write to the store (Set is never intercepted -- see
 // keystore.WithEnvOverride's doc comment), but the key just stored is not
 // the one that will be used, and the response must say so rather than

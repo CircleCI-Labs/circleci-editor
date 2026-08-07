@@ -888,7 +888,7 @@ func (s *Server) buildMux() (http.Handler, error) {
 }
 
 // newRootHandler returns the handler for all non-API paths: a reverse proxy
-// to a Vite dev server when VCE_DEV_PROXY is set, or the embedded SPA
+// to a Vite dev server when CIRCLECI_EDITOR_DEV_PROXY is set, or the embedded SPA
 // assets otherwise.
 func (s *Server) newRootHandler() (http.Handler, error) {
 	if target := os.Getenv(devProxyEnvVar); target != "" {
@@ -976,7 +976,7 @@ func (s *Server) ConfigFound() bool {
 // both produce, since neither runs the Vite build `task build` runs before
 // its own `go build`).
 //
-// False whenever VCE_DEV_PROXY is set: that mode reverse-proxies to a
+// False whenever CIRCLECI_EDITOR_DEV_PROXY is set: that mode reverse-proxies to a
 // running Vite dev server instead of reading the embedded assets at all
 // (see newRootHandler), so the embed's contents are irrelevant to what a
 // browser actually sees.

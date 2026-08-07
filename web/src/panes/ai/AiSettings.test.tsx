@@ -23,7 +23,7 @@ const AI_STATE_RESET = {
   mcpError: null,
 };
 
-const ENV_VAR = 'VCE_AI_KEY_ANTHROPIC';
+const ENV_VAR = 'CIRCLECI_EDITOR_AI_KEY_ANTHROPIC';
 
 /** A provider entry with every field `AiSettings`/`ProviderRow` reads, so each test only has to override what it's actually exercising. */
 function provider(overrides: Partial<AiProviderStatus>): AiProviderStatus {

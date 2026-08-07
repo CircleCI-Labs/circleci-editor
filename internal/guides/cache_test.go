@@ -206,7 +206,7 @@ func TestCacheRefresh_NoOpWhileAlreadyRefreshing(t *testing.T) {
 }
 
 // TestCacheRefresh_IgnoresNoRefreshEnvVar is the other half of issue #285's
-// docs note: VCE_GUIDES_NO_REFRESH disables the *automatic* seven-day check,
+// docs note: CIRCLECI_EDITOR_GUIDES_NO_REFRESH disables the *automatic* seven-day check,
 // documented from the start as leaving room for requests "a user explicitly
 // triggers" -- Refresh is exactly that, and must still work with the
 // automatic cycle turned off.
@@ -682,4 +682,16 @@ func TestCacheHooksMayBeNil(t *testing.T) {
 	cache.load()
 	cache.debugf("bookkeeping %d", 1)
 	cache.warnf("failure %v", context.Canceled)
+}
+
+// TestNoRefresh_SupersededSpelling pins that the pre-rename variable still
+// pins the snapshot. This one matters more than it looks: it is the switch that
+// keeps tests and offline runs from reaching the network, so silently losing it
+// would turn hermetic runs into ones that quietly depend on upstream.
+func TestNoRefresh_SupersededSpelling(t *testing.T) {
+	t.Setenv(supersededNoRefreshEnvVar, "1")
+	// This test is in package guides, so it reads the field the constructor
+	// sets rather than needing an accessor exposed only for it.
+	assert.Assert(t, NewCache(t.TempDir(), nil, nil).noRefresh,
+		"the superseded spelling must still disable the background refresh")
 }

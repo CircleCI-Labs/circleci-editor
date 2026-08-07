@@ -64,7 +64,7 @@ function seedStores({
               configured: aiConfigured,
               model: 'claude-test-model',
               source: aiConfigured ? ('store' as const) : ('none' as const),
-              envVar: 'VCE_AI_KEY_ANTHROPIC',
+              envVar: 'CIRCLECI_EDITOR_AI_KEY_ANTHROPIC',
               storedKeyShadowed: false,
             },
           ],

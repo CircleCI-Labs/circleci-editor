@@ -106,7 +106,7 @@ which binds a listener, optionally opens the browser, and serves until
   - Everything else under `/api/` 404s as JSON, rather than falling through
     to the SPA's HTML fallback.
 - **Everything else** — either a reverse proxy to a running Vite dev server
-  (when `VCE_DEV_PROXY` is set; see `task dev`), or the embedded SPA
+  (when `CIRCLECI_EDITOR_DEV_PROXY` is set; see `task dev`), or the embedded SPA
   (`internal/host/assets.go`), which serves `index.html` as a fallback for
   client-side routing, and serves the committed `placeholder.html` instead
   if the binary was built without a real web build.

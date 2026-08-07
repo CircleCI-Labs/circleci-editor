@@ -31,6 +31,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/CircleCI-Labs/circleci-editor/internal/envcompat"
 )
 
 const (
@@ -76,7 +78,11 @@ const (
 	// snapshot, which is the point of having one -- so this is a supported
 	// way to run the editor with no outbound requests at all beyond those a
 	// user explicitly triggers.
-	NoRefreshEnvVar = "VCE_GUIDES_NO_REFRESH"
+	NoRefreshEnvVar = "CIRCLECI_EDITOR_GUIDES_NO_REFRESH"
+
+	// supersededNoRefreshEnvVar is the pre-rename spelling, still honoured with
+	// a deprecation warning -- see internal/envcompat.
+	supersededNoRefreshEnvVar = "VCE_GUIDES_NO_REFRESH"
 )
 
 // Source describes where the currently-served guides came from.
@@ -195,7 +201,7 @@ func NewCache(cacheDir string, debugf, warnf func(string, ...any)) *Cache {
 		cacheDir:  cacheDir,
 		debugf:    debugf,
 		warnf:     warnf,
-		noRefresh: os.Getenv(NoRefreshEnvVar) != "",
+		noRefresh: envcompat.Set(NoRefreshEnvVar, supersededNoRefreshEnvVar),
 	}
 }
 
@@ -249,7 +255,7 @@ func (c *Cache) Start(ctx context.Context) {
 // "CircleCI docs offline" badge means "will update" or "never will", let
 // alone force the former sooner than refreshTTL.
 //
-// It deliberately ignores noRefresh (VCE_GUIDES_NO_REFRESH): that variable
+// It deliberately ignores noRefresh (CIRCLECI_EDITOR_GUIDES_NO_REFRESH): that variable
 // disables the *automatic* seven-day check, documented from the start as
 // leaving room for "no outbound requests beyond those a user explicitly
 // triggers" -- a manual click is exactly that, so it must still work even

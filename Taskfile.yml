@@ -206,7 +206,7 @@ tasks:
   dev:host:
     desc: (internal) Run the Go host, proxying web asset requests to the Vite dev server
     env:
-      VCE_DEV_PROXY: http://localhost:5173
+      CIRCLECI_EDITOR_DEV_PROXY: http://localhost:5173
     cmds:
       # --keep-alive: since issue #177 the host stops a short while after the
       # last editor window closes, which is right for a released binary and

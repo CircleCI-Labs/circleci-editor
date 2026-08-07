@@ -158,6 +158,23 @@ export const APP_BAR_FURNITURE_PX: Record<AppBarTier, number> = {
   full: 1421,
 };
 
+/*
+ * These were measured while the app was called "CircleCI Visual Config Editor"
+ * (short form "Config Editor"). It is now "CircleCI Editor" (short form
+ * "Editor"), so every entry above over-states the furniture by roughly the
+ * width the removed words occupied.
+ *
+ * Left as measured rather than adjusted by arithmetic on a font's advance
+ * widths, because a guessed number here is worth less than a stale measured
+ * one: per this module's contract these are only a *starting* tier, and being
+ * pessimistic costs a bar that begins one tier terser than it needed to --
+ * nothing that can collapse wrongly. The whole responsive sweep in
+ * `e2e/responsive-layout.spec.ts` passes unchanged after the rename, which is
+ * the property that actually matters.
+ *
+ * Worth re-measuring the next time someone is in here with the app running.
+ */
+
 /**
  * At or above this measured bar width the config path shows its last two
  * segments and the preset switcher keeps its row of pills.

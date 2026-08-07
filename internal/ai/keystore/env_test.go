@@ -84,11 +84,11 @@ func (m *memStore) Backend() keystore.Backend { return m.backend }
 func (m *memStore) Location() string          { return "in-memory test store" }
 
 func TestKeyEnvVar_Fn_DerivesTheNameFromTheEntryID(t *testing.T) {
-	assert.Equal(t, keystore.KeyEnvVar("anthropic"), "VCE_AI_KEY_ANTHROPIC")
+	assert.Equal(t, keystore.KeyEnvVar("anthropic"), "CIRCLECI_EDITOR_AI_KEY_ANTHROPIC")
 	// Non-alphanumerics become underscores so every id this store can hold
 	// maps to a legal shell variable name.
-	assert.Equal(t, keystore.KeyEnvVar("mcp-docs-token"), "VCE_AI_KEY_MCP_DOCS_TOKEN")
-	assert.Equal(t, keystore.KeyEnvVar("provider.2"), "VCE_AI_KEY_PROVIDER_2")
+	assert.Equal(t, keystore.KeyEnvVar("mcp-docs-token"), "CIRCLECI_EDITOR_AI_KEY_MCP_DOCS_TOKEN")
+	assert.Equal(t, keystore.KeyEnvVar("provider.2"), "CIRCLECI_EDITOR_AI_KEY_PROVIDER_2")
 }
 
 // TestWithEnvOverride_Fn_EnvironmentWinsOverAStoredKey is the precedence rule
@@ -162,7 +162,7 @@ func TestLookupKey_Fn_ReportsTheStoreWhenNoVariableIsSet(t *testing.T) {
 	assert.Equal(t, lookup.Source, keystore.SourceStore)
 	assert.Equal(t, lookup.Stored, true)
 	assert.Equal(t, lookup.EnvSet, false)
-	assert.Equal(t, lookup.EnvVar, "VCE_AI_KEY_ANTHROPIC")
+	assert.Equal(t, lookup.EnvVar, "CIRCLECI_EDITOR_AI_KEY_ANTHROPIC")
 	assert.NilError(t, lookup.StoreErr)
 }
 
@@ -289,4 +289,57 @@ func TestSelect_Fn_MatchesTheBackendOpenActuallyReturns(t *testing.T) {
 	store, err := keystore.Open()
 	assert.NilError(t, err)
 	assert.Equal(t, keystore.Select().Backend, store.Backend())
+}
+
+// TestEnvKey_SupersededPrefixStillWorks pins the migration promise: someone who
+// exported the pre-rename variable name keeps working, and is told what to
+// change. Renaming an environment variable that may sit in a shell profile
+// should announce itself rather than silently stop supplying a key -- which,
+// for an AI key, would look like the pane forgetting a key that is right there
+// in the environment.
+func TestEnvKey_SupersededPrefixStillWorks(t *testing.T) {
+	t.Setenv(keystore.SupersededKeyEnvVarPrefix+"ANTHROPIC", "sk-from-old-name")
+
+	store := keystore.WithEnvOverride(newMemStore())
+	got, ok, err := store.Get(context.Background(), "anthropic")
+	assert.NilError(t, err)
+	assert.Assert(t, ok, "the superseded variable name must still supply a key")
+	assert.Equal(t, got.Reveal(), "sk-from-old-name")
+}
+
+// TestEnvKey_CurrentPrefixWinsOverSuperseded pins precedence between the two
+// spellings, so a half-migrated environment behaves predictably rather than
+// depending on lookup order.
+func TestEnvKey_CurrentPrefixWinsOverSuperseded(t *testing.T) {
+	t.Setenv(keystore.KeyEnvVarPrefix+"ANTHROPIC", "sk-from-new-name")
+	t.Setenv(keystore.SupersededKeyEnvVarPrefix+"ANTHROPIC", "sk-from-old-name")
+
+	store := keystore.WithEnvOverride(newMemStore())
+	got, ok, err := store.Get(context.Background(), "anthropic")
+	assert.NilError(t, err)
+	assert.Assert(t, ok)
+	assert.Equal(t, got.Reveal(), "sk-from-new-name")
+}
+
+// TestLookupKey_NamesTheVariableActuallySupplyingTheKey pins an honesty
+// property, not a formatting one. When the superseded spelling is what supplies
+// the key, a status line that names the *current* variable is telling the user
+// about a variable they have not set while a different one does the work -- and
+// someone debugging "why is it using the wrong key" would be sent to look in
+// the wrong place.
+func TestLookupKey_NamesTheVariableActuallySupplyingTheKey(t *testing.T) {
+	t.Setenv(keystore.SupersededKeyEnvVarPrefix+"ANTHROPIC", "sk-from-old-name")
+
+	got := keystore.LookupKey(context.Background(), newMemStore(), "anthropic")
+	assert.Equal(t, got.Source, keystore.SourceEnv)
+	assert.Equal(t, got.EnvVar, keystore.SupersededKeyEnvVarPrefix+"ANTHROPIC")
+}
+
+// TestLookupKey_NamesTheCurrentVariableWhenNothingIsSet keeps the advice useful
+// in the common case: with neither spelling set, the name worth showing is the
+// one a reader should go and use.
+func TestLookupKey_NamesTheCurrentVariableWhenNothingIsSet(t *testing.T) {
+	got := keystore.LookupKey(context.Background(), newMemStore(), "anthropic")
+	assert.Equal(t, got.Source, keystore.SourceNone)
+	assert.Equal(t, got.EnvVar, keystore.KeyEnvVar("anthropic"))
 }

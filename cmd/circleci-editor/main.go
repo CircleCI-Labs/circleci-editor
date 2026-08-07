@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -90,8 +91,8 @@ type options struct {
 }
 
 // debugEnvVar is the environment-variable spelling of --debug (issue #216),
-// following this project's existing VCE_* convention (VCE_DEV_PROXY,
-// VCE_GUIDES_NO_REFRESH, VCE_AI_KEYSTORE_BACKEND).
+// following this project's existing VCE_* convention (CIRCLECI_EDITOR_DEV_PROXY,
+// CIRCLECI_EDITOR_GUIDES_NO_REFRESH, CIRCLECI_EDITOR_AI_KEYSTORE_BACKEND).
 //
 // It exists alongside the flag, not instead of it, for one specific reason:
 // --debug is *also* a global flag on the CircleCI CLI this ships as a plugin
@@ -103,10 +104,14 @@ type options struct {
 // Any non-empty value enables it, matching how every other VCE_* variable in
 // this project and every boolean variable in the CircleCI CLI's own
 // environment (CIRCLE_NO_COLOR, CIRCLE_NO_INTERACTIVE, ...) is read: "set to
-// any value". Deliberately not parsed as a boolean, so VCE_DEBUG=0 does not
+// any value". Deliberately not parsed as a boolean, so CIRCLECI_EDITOR_DEBUG=0 does not
 // silently mean "on" to us and "off" to somebody's shell script -- see
 // debugEnabled.
-const debugEnvVar = "VCE_DEBUG"
+const debugEnvVar = "CIRCLECI_EDITOR_DEBUG"
+
+// supersededDebugEnvVar is the pre-rename spelling, still honoured with a
+// deprecation warning -- see internal/envcompat.
+const supersededDebugEnvVar = "VCE_DEBUG"
 
 // debugEnabled resolves whether debug output is on, from the flag and the
 // environment. A pure function of both so it can be tested without a server,
@@ -117,12 +122,22 @@ const debugEnvVar = "VCE_DEBUG"
 // only reason to name a source of "off" would be to override an inherited
 // environment -- for which unsetting the variable is the obvious answer.
 //
-// VCE_DEBUG="" is off, not on. An exported-but-empty variable is what a shell
-// leaves behind after `export VCE_DEBUG=` or what CI injects for an unset
+// CIRCLECI_EDITOR_DEBUG="" is off, not on. An exported-but-empty variable is what a shell
+// leaves behind after `export CIRCLECI_EDITOR_DEBUG=` or what CI injects for an unset
 // value, and treating that as "on" would turn the flag on for people who
 // meant the opposite.
 func debugEnabled(flagSet bool, getenv func(string) string) bool {
-	return flagSet || getenv(debugEnvVar) != ""
+	if flagSet || getenv(debugEnvVar) != "" {
+		return true
+	}
+	// The superseded spelling still works. Warned about here rather than in
+	// envcompat because this reads through an injected getenv so the decision
+	// stays testable without touching the process environment.
+	if getenv(supersededDebugEnvVar) != "" {
+		warnSupersededDebugEnvVar()
+		return true
+	}
+	return false
 }
 
 // stopOnLastClient decides whether this invocation stops when the last
@@ -395,3 +410,17 @@ func printBanner(cmd *cobra.Command, srv *host.Server) error {
 	_, err := fmt.Fprint(cmd.OutOrStdout(), b.String())
 	return err
 }
+
+// warnSupersededDebugEnvVar reports the old spelling once. Kept next to
+// debugEnabled rather than in internal/envcompat because that helper reads the
+// process environment directly, and debugEnabled deliberately takes an injected
+// getenv so the flag's precedence can be tested as a pure function.
+func warnSupersededDebugEnvVar() {
+	supersededDebugOnce.Do(func() {
+		// See internal/envcompat for why the write error is ignored.
+		_, _ = fmt.Fprintf(os.Stderr, "warning: %s is deprecated and will be removed; use %s instead.\n",
+			supersededDebugEnvVar, debugEnvVar)
+	})
+}
+
+var supersededDebugOnce sync.Once

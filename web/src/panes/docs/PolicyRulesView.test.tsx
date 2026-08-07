@@ -209,7 +209,7 @@ describe('PolicyRulesView', () => {
             configured: true,
             model: 'm',
             source: 'store',
-            envVar: 'VCE_AI_KEY_ANTHROPIC',
+            envVar: 'CIRCLECI_EDITOR_AI_KEY_ANTHROPIC',
             storedKeyShadowed: false,
           },
         ],

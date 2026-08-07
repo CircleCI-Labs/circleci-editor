@@ -147,7 +147,7 @@ Each run picks its own `vite preview` port automatically (derived from the
 process's pid), so concurrent checkouts of this repo — several agent
 worktrees on one machine is normal here — never attach to another run's
 server and test its bundle instead of yours. You don't need to do anything
-for this. Set `VCE_E2E_PORT` only if you want a fixed, memorable port, e.g.
+for this. Set `CIRCLECI_EDITOR_E2E_PORT` only if you want a fixed, memorable port, e.g.
 to point a manual browser tab at the running app while debugging a spec.
 
 ## Releasing

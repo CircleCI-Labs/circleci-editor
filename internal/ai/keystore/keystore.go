@@ -47,7 +47,7 @@
 // rather than silently accepted.
 //
 // One thing outranks both backends: an environment variable
-// (VCE_AI_KEY_<ENTRY>, see KeyEnvVar) supplies a key without storing one, and
+// (CIRCLECI_EDITOR_AI_KEY_<ENTRY>, see KeyEnvVar) supplies a key without storing one, and
 // wins over anything stored. That precedence is applied by the wrapper Open
 // returns (see WithEnvOverride), never re-implemented per caller, and
 // LookupKey reports which of the two is in effect -- provenance being the
@@ -65,6 +65,7 @@ import (
 	"strings"
 
 	"github.com/CircleCI-Labs/circleci-editor/internal/ai/secret"
+	"github.com/CircleCI-Labs/circleci-editor/internal/envcompat"
 )
 
 // Backend identifies which storage mechanism a Store uses, surfaced to the
@@ -114,7 +115,11 @@ const service = "circleci-editor"
 // keychain-unlock prompt force the file fallback instead of hanging, and it
 // lets a user who simply prefers a plain file say so. An unrecognised or
 // empty value is ignored (falls through to automatic detection).
-const KeystoreBackendEnvVar = "VCE_AI_KEYSTORE_BACKEND"
+const KeystoreBackendEnvVar = "CIRCLECI_EDITOR_AI_KEYSTORE_BACKEND"
+
+// SupersededKeystoreBackendEnvVar is the pre-rename spelling, still honoured
+// with a deprecation warning -- see internal/envcompat.
+const SupersededKeystoreBackendEnvVar = "VCE_AI_KEYSTORE_BACKEND"
 
 // Open picks and constructs a Store: the OS keychain when one is available
 // for the current platform, otherwise the file fallback. The result is
@@ -147,7 +152,7 @@ func Open() (Store, error) {
 // forcedBackend reads KeystoreBackendEnvVar, returning ok=false for an
 // unset, empty, or unrecognised value.
 func forcedBackend() (Backend, bool) {
-	switch os.Getenv(KeystoreBackendEnvVar) {
+	switch envcompat.Value(KeystoreBackendEnvVar, SupersededKeystoreBackendEnvVar) {
 	case string(BackendFile):
 		return BackendFile, true
 	case string(BackendKeychain):
