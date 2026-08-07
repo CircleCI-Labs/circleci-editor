@@ -117,6 +117,20 @@
       "matchDepNames": ["@xyflow/react", "elkjs"],
       "groupName": "DAG rendering",
       "labels": ["needs-visual-review"]
+    },
+    {
+      // Issue #15: circleci-cli was previously installed from the head of
+      // its main branch, with no version pin at all, and an unannounced
+      // upstream change (`circleci config validate` becoming server-side)
+      // broke this repo's own CI as a result. Pinned now, and held back
+      // briefly rather than auto-bumped the moment a new release appears --
+      // circleci-cli cuts a release on effectively every merge to its own
+      // main, so "latest" carries none of the "this has been out a while"
+      // signal a slower-moving dependency's latest release would.
+      "matchDepNames": ["CircleCI-Public/circleci-cli"],
+      "groupName": null,
+      "labels": ["toolchain"],
+      "minimumReleaseAge": "3 days"
     }
   ],
 
@@ -134,6 +148,19 @@
         "golangci-lint/HEAD/install\\.sh \\| sh -s -- -b \\$\\(go env GOPATH\\)/bin v(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
       ],
       "depNameTemplate": "golangci/golangci-lint",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.*)$"
+    },
+    {
+      // Tracks .circleci/config.yml's CIRCLECI_CLI_VERSION (issue #15).
+      // Single-file, unlike golangci-lint's pin above -- there is only one
+      // place this version appears, so one matchString is enough.
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.circleci/config\\.yml$/"],
+      "matchStrings": [
+        "CIRCLECI_CLI_VERSION:\\s*\"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""
+      ],
+      "depNameTemplate": "CircleCI-Public/circleci-cli",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v?(?<version>.*)$"
     }

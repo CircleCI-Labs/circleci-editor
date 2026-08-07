@@ -219,37 +219,98 @@ jobs:
 
   validate-own-config:
     executor: linux
+    # Issue #15: this job used to be a single token-gated step. No context
+    # or project environment variable actually supplies CIRCLE_TOKEN to this
+    # job today (verified: a same-repo, non-fork build still sees none), so
+    # that step was a no-op skip on *every* build, not just fork PRs -- and
+    # a fork PR could never get anything else, since CircleCI does not share
+    # context secrets with pull requests from forks even once a token
+    # exists. Two layers now, deliberately in this order: the offline check
+    # first, because it is the one every build actually gets today and
+    # costs nothing to run before touching the network; the API-backed
+    # check second, because it would be strictly stronger the day a token
+    # is wired up for non-fork builds, but is the one that may never run.
     steps:
       - checkout
+      - restore-go-cache
       - run:
-          name: Install CircleCI CLI
-          command: curl -fLSs https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/main/install.sh | sudo bash
+          # No CircleCI API token needed, so this is the check that actually
+          # runs on every PR, fork or not -- unlike the step below. It can't
+          # resolve an orb or evaluate a config policy (nothing offline
+          # can), but it does catch real, common breakage: invalid YAML, a
+          # misspelled top-level key (the exact bug issue #5 was filed
+          # over -- CircleCI's own compiler has no opinion on top-level keys
+          # at all, so that class of error is invisible to the step below
+          # too), and a workflow that requires a job which doesn't exist.
+          # See internal/configcheck's package doc comment for the full
+          # account of what this can and can't see.
+          name: "Dogfood: offline structural check (runs on every PR, including forks)"
+          command: go run ./internal/configcheck/cmd/checkconfig .circleci/config.yml
       - run:
           # `circleci config validate` is server-side: it posts the config to
-          # the compile endpoint, so it needs a CircleCI API token. It used to
-          # pass here with no token at all, and stopped -- this job installs the
-          # CLI from the head of `circleci-cli`'s main branch on every run, so an
-          # upstream change lands in our CI with no version bump on our side.
+          # the compile-config-with-defaults endpoint, so it needs a
+          # CircleCI API token. This step used to install the CLI from the
+          # head of circleci-cli's main branch on every run, so an upstream
+          # change reached our CI with no version bump and no signal on our
+          # side -- which is exactly what happened when `circleci config
+          # validate` became server-side and started requiring a token this
+          # job didn't have. CIRCLECI_CLI_VERSION pins that, and both the
+          # installer script and the binary it installs come from the same
+          # tagged release rather than main, so a change to install.sh
+          # itself can't reach us unannounced either. Renovate tracks this
+          # version the same way it tracks GOLANGCI_LINT_VERSION (see
+          # renovate.json5's customManagers): a bump always arrives as its
+          # own reviewable PR, never silently.
           #
-          # A token cannot simply be added: CircleCI does not share context
-          # secrets with pull requests from forks, so a token-gated step here
-          # would fail every outside contributor's first PR. That is the wrong
-          # trade for a public repository, and no read-only CircleCI API context
-          # exists to use anyway (`devex-release` is write-scoped and is
-          # deliberately kept away from fork-facing jobs).
+          # A token cannot simply be added as a context: CircleCI does not
+          # share context secrets with pull requests from forks, so a
+          # context-gated step here would fail every outside contributor's
+          # first PR. That is the wrong trade for a public repository, and
+          # no read-only CircleCI API context exists to use anyway
+          # (`devex-release` is write-scoped and is deliberately kept away
+          # from fork-facing jobs). A project-level environment variable
+          # (Project Settings, not a context) would reach non-fork builds
+          # without that problem -- CircleCI's default, secure setting
+          # withholds those from fork PRs too -- but none is configured for
+          # CIRCLE_TOKEN today, which is why this step currently skips on
+          # every build, this PR's own included; see this job's comment
+          # above for how that was confirmed.
           #
-          # So: validate when a token happens to be available, and say plainly
-          # why it was skipped when one is not. See issue #314 for restoring a
-          # real check -- either a read-only context, or offline validation
-          # against the schema this repo already vendors.
-          name: "Dogfood: validate this repo's own CircleCI config"
+          # So: validate when a token happens to be available, and say
+          # loudly why it was skipped when one is not -- a green step here
+          # must never be mistaken for "this config was fully validated"
+          # when the step above is the only thing that actually ran.
+          name: "Full validate via the CircleCI API (needs a token; currently always skipped -- see comment above)"
+          environment:
+            CIRCLECI_CLI_VERSION: "1.0.47471"
           command: |
             if [ -z "${CIRCLE_TOKEN:-}" ]; then
-              echo "SKIPPED: circleci config validate needs a CircleCI API token,"
-              echo "and none is available on this build (see issue #314)."
-              echo "This is a deliberate skip, not a passing validation."
+              echo "################################################################"
+              echo "# SKIPPED -- NOT VALIDATED against the CircleCI API."
+              echo "#"
+              echo "# No CIRCLE_TOKEN is available on this build. As of this writing"
+              echo "# that is true of every build of this job, not just fork PRs --"
+              echo "# no context or project environment variable currently supplies"
+              echo "# one (see this job's own comment above). If that changes, fork"
+              echo "# PRs specifically will keep skipping this step regardless:"
+              echo "# CircleCI does not share project secrets with pull requests"
+              echo "# from forks."
+              echo "#"
+              echo "# This step normally submits the config to"
+              echo "# compile-config-with-defaults, which resolves orbs and"
+              echo "# evaluates config policies -- neither ran here. This is a"
+              echo "# deliberate skip, not a passing validation of any of that."
+              echo "#"
+              echo "# The offline structural check above still ran on this build"
+              echo "# and would have failed it on a real config error; it just"
+              echo "# cannot see everything this step can (see"
+              echo "# internal/configcheck's package doc comment)."
+              echo "################################################################"
               exit 0
             fi
+
+            curl -fLSs "https://raw.githubusercontent.com/CircleCI-Public/circleci-cli/v${CIRCLECI_CLI_VERSION}/install.sh" \
+              | sudo env VERSION="${CIRCLECI_CLI_VERSION}" bash
             circleci config validate .circleci/config.yml
 
   # Issue #119: this repo squash-merges, so a PR's title (not its commits)
