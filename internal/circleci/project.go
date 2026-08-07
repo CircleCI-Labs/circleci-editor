@@ -53,6 +53,12 @@ const (
 	projectSettingsV3PathFmt     = "/api/v3/projects/%s/settings"
 	maxProjectMetadataPageCount  = 50
 	truncatedValuePreviewMaxRune = 8
+
+	// followedProjectsPath is the one exception to the v2/v3 straddle
+	// documented above: v1.1, because no later version of the API lists
+	// projects across an organization without already knowing one's slug.
+	// See ListFollowedProjects.
+	followedProjectsPath = "/api/v1.1/projects"
 )
 
 // The `restriction_type` values CircleCI returns for a context restriction.
@@ -501,6 +507,69 @@ func (c *Client) GetProject(ctx context.Context, projectSlug string) (*Project, 
 		VCSProvider:      wire.VCSInfo.Provider,
 		DefaultBranch:    wire.VCSInfo.DefaultBranch,
 	}, nil
+}
+
+// FollowedProject is one project reported by ListFollowedProjects: enough to
+// compare against a slug that failed to resolve, and nothing else.
+type FollowedProject struct {
+	// Org and Repo are the VCS organization/user and repository name -- the
+	// v1.1 API's own "username" and "reponame" fields, renamed here to match
+	// this package's own vocabulary for the same two things elsewhere.
+	Org, Repo string
+
+	// VCSType is the VCS provider, in the v1.1 API's own long spelling
+	// ("github", "bitbucket", "gitlab") -- pass it through CanonicalVCSSegment
+	// before comparing against a slug's own VCS segment.
+	VCSType string
+}
+
+// followedProjectWire is the subset of one v1.1 "list projects" entry this
+// package decodes. See ListFollowedProjects for what the rest of the entry
+// holds and why it is left undecoded.
+type followedProjectWire struct {
+	Username string `json:"username"`
+	Reponame string `json:"reponame"`
+	VCSType  string `json:"vcs_type"`
+}
+
+// ListFollowedProjects returns every project visible to this token, via the
+// deprecated v1.1 API -- the same data backing `circleci project list`, the
+// remedy this package's own suggestions already point a user at when a slug
+// does not resolve (see host.projectBindingSuggestions).
+//
+// ## Why v1.1, and why this is the one place in this package that uses it
+//
+// Every v2 project endpoint is keyed by a slug the caller must already have;
+// there is no v2 or v3 call that lists an organization's projects, or a
+// user's, without one. v1.1 is the only CircleCI API surface with that
+// listing at all, which is why it survives here despite the rest of this
+// package (see the doc comment on the path constants above) straddling only
+// v2 and v3.
+//
+// Verified live against this repository's own token, 2026-08-07: HTTP 200, a
+// JSON array of project records. Each carries `username`/`reponame`/`vcs_type`
+// alongside a `branches` map of recent build outcomes per branch -- run
+// history, which issue #105 already put out of this editor's scope, and which
+// this method must not become a second, worse way to view. Only the three
+// identifying fields are decoded; encoding/json ignores the rest without
+// allocating it into anything this package holds on to.
+//
+// This is a *token-scoped* list: it holds only the projects that token can
+// see, which is exactly the property host.projectNearMissCandidates needs
+// (issue #20) -- a near-miss suggestion built from it can never name a
+// project the user has no visibility into, because there was never a way for
+// this call to have returned one.
+func (c *Client) ListFollowedProjects(ctx context.Context) ([]FollowedProject, error) {
+	var wire []followedProjectWire
+	if err := c.do(ctx, http.MethodGet, followedProjectsPath, nil, &wire); err != nil {
+		return nil, err
+	}
+
+	out := make([]FollowedProject, 0, len(wire))
+	for _, p := range wire {
+		out = append(out, FollowedProject{Org: p.Username, Repo: p.Reponame, VCSType: p.VCSType})
+	}
+	return out, nil
 }
 
 // projectSettingsV3Response is the JSON response body from

@@ -66,15 +66,36 @@
  *
  * Deep-linking rather than rendering any run information holds this app's
  * scope exactly where it already is: author here, observe in the web UI.
+ *
+ * ## Issue #20: the organization gets its own link, and a near-miss gets named
+ *
+ * Before this issue the whole "<organization>/<project>" label linked only to
+ * the project, because no organization-level route had been verified against
+ * the live app -- see `Environment.OrgWebURLForSlug`'s doc comment for that
+ * verification. The two halves are now two independent links (or two
+ * independent pieces of plain text, for a slug this host still cannot
+ * address), each honest about whether it has a destination.
+ *
+ * The "Unknown to CircleCI" state also gained one thing to say when there is
+ * something to say: if the 404'd slug is within a typo's distance of exactly
+ * one other project this token can see in the same organization, the
+ * explanation names it. `projectNearMiss` carries the actual judgment call
+ * (reusing `nearestUnique`, not re-deriving it); this component only renders
+ * what that function decided.
  */
 import { useEffect } from 'react';
 
 import { Badge, type BadgeTone } from '~/design/components/Badge';
 import { Tooltip } from '~/design/components/Tooltip';
-import type { Meta, ProjectBindingInfo } from '~/lib/rpc/client';
+import type {
+  Meta,
+  ProjectBindingInfo,
+  ProjectContextWarning,
+} from '~/lib/rpc/client';
 import { useAppStore } from '~/state/appStore';
 import {
   projectLookup,
+  projectNearMiss,
   useProjectContextStore,
 } from '~/state/projectContextStore';
 
@@ -122,6 +143,35 @@ export function slugProvenance(meta: Meta): string {
   }
 
   return '';
+}
+
+/**
+ * What the "Unknown to CircleCI" badge's tooltip says: the host's own 404
+ * diagnosis, plus a near-miss suggestion when `projectNearMiss` finds one
+ * (issue #20).
+ *
+ * Exported and pure for the same reason `slugProvenance` is: Radix mounts
+ * tooltip content on hover, so this is the testable half of a sentence no
+ * test in this file reads out of the DOM directly.
+ *
+ * `org` is the tried slug's own org segment, not the (possibly
+ * CircleCI-supplied) display name a caller might otherwise reach for --
+ * the near-miss candidates this names are raw VCS repository names in that
+ * org, so the suggestion has to be spelled the same way to be a slug someone
+ * could actually act on.
+ */
+export function unknownToCircleCIExplanation(
+  warning: ProjectContextWarning | null | undefined,
+  triedSlug: string,
+  org: string,
+): string {
+  const base =
+    warning?.detail ??
+    `CircleCI has no project matching ${triedSlug}. Most often that means this repository has not been set up on CircleCI yet.`;
+  const nearMiss = projectNearMiss(warning, triedSlug);
+  return nearMiss
+    ? `${base} A project called ${org}/${nearMiss} does exist in this organization — did you mean that one?`
+    : base;
 }
 
 /**
@@ -201,23 +251,32 @@ export function ProjectIdentity() {
   const parts = splitProjectSlug(canonicalSlug);
   const orgName = project?.organizationName || parts?.org || canonicalSlug;
   const repoName = project?.name || parts?.repo || '';
-  const label = repoName ? `${orgName}/${repoName}` : orgName;
 
-  // A record present means CircleCI answered, so its URL -- or its deliberate
-  // lack of one -- is the answer. No `??` chain onto `meta.projectWebUrl` here,
-  // on purpose: see this file's header.
+  // A record present means CircleCI answered, so its URLs -- or their
+  // deliberate lack of one -- are the answer. No `??` chain onto `meta`'s own
+  // fields here, on purpose: see this file's header. Each half is superseded
+  // independently, because a project record can carry one URL without the
+  // other (a standalone project's organization is frequently name-addressed
+  // even when the project itself is ID-addressed, and vice versa).
   const webUrl = project ? project.webUrl : meta.projectWebUrl;
+  const orgWebUrl = project ? project.organizationWebUrl : meta.orgWebUrl;
 
   const lookup = projectLookup({ state, warnings, project, reason });
 
   let status: IdentityStatus | null = null;
   if (lookup.status === 'absent') {
+    // `parts?.org` rather than `orgName`: this is the absent state, so there
+    // is no project record and `orgName` already fell back to the *tried* org
+    // segment -- but spelling that out here rather than relying on it keeps
+    // this correct even if that fallback chain ever changes.
     status = {
       label: 'Unknown to CircleCI',
       tone: 'warning',
-      explanation:
-        lookup.warning?.detail ??
-        `CircleCI has no project matching ${canonicalSlug}. Most often that means this repository has not been set up on CircleCI yet.`,
+      explanation: unknownToCircleCIExplanation(
+        lookup.warning,
+        canonicalSlug,
+        parts?.org ?? orgName,
+      ),
     };
   } else if (lookup.status === 'unreachable') {
     status = {
@@ -236,16 +295,16 @@ export function ProjectIdentity() {
   // is three places for it to drift.
   const provenance = slugProvenance(meta);
 
-  const destinationTooltip = !webUrl
+  const repoTooltip = !webUrl
     ? // No URL. When CircleCI answered, we can say why with confidence -- this
       // project is addressed by ID rather than by organization and repository
-      // name, which is how GitLab and GitHub App projects work -- and
-      // `vcsProvider` names the integration rather than listing possibilities.
-      // Without a record we say only what is true: there is no page this slug
-      // can address.
+      // name, and this host has not verified a page for that shape (unlike a
+      // standalone project's, since issue #20) -- and `vcsProvider` names the
+      // integration rather than listing possibilities. Without a record we say
+      // only what is true: there is no page this slug can address.
       `${canonicalSlug} — ${
         project
-          ? `CircleCI addresses this ${project.vcsProvider || 'standalone'} project by ID rather than by organization and repository name`
+          ? `CircleCI addresses this ${project.vcsProvider || 'standalone'} project by an ID-addressed page this host has not verified`
           : 'the project this checkout claims to belong to. CircleCI has no page this slug can address'
       }, so there is nothing to open here.`
     : lookup.status === 'confirmed'
@@ -254,31 +313,50 @@ export function ProjectIdentity() {
         // can browse anywhere you want."* The host builds the URL; see
         // `Environment.ProjectWebURLForSlug` for the route and for how it was
         // verified in a real browser.
-        `${label} on CircleCI (${canonicalSlug}). Opens this project’s overview in the CircleCI web UI, from where its pipelines, insights and settings are one click away.`
+        `${repoName || canonicalSlug} on CircleCI (${canonicalSlug}). Opens this project’s overview in the CircleCI web UI, from where its pipelines, insights and settings are one click away.`
       : `${canonicalSlug} — the project this checkout claims to belong to. Opens its overview in the CircleCI web UI.`;
 
-  const identityTooltip = provenance
-    ? `${destinationTooltip} ${provenance}`
-    : destinationTooltip;
+  const repoIdentityTooltip = provenance
+    ? `${repoTooltip} ${provenance}`
+    : repoTooltip;
 
-  const identity = webUrl ? (
+  // The organization half of issue #20's link pair. No provenance sentence
+  // here: `slugProvenance` is about where the *project* slug came from, which
+  // says nothing new about the organization that was not already said above,
+  // and repeating it under both halves would just be the same sentence twice.
+  const orgTooltip = !orgWebUrl
+    ? `${orgName} — the organization this checkout claims to belong to. This host has no verified page it can address for it, so there is nothing to open here.`
+    : `${orgName} on CircleCI. Opens this organization’s pipelines in the CircleCI web UI.`;
+
+  const orgElement = orgWebUrl ? (
+    <a
+      href={orgWebUrl}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="shrink-0 rounded text-xs text-cc-text-muted underline decoration-dotted underline-offset-2 outline-none hover:text-cc-accent focus-visible:text-cc-accent focus-visible:ring-1 focus-visible:ring-cc-accent"
+    >
+      {orgName}
+    </a>
+  ) : (
+    <span className="shrink-0 text-xs text-cc-text-muted">{orgName}</span>
+  );
+
+  const repoElement = webUrl ? (
     <a
       href={webUrl}
       target="_blank"
       rel="noreferrer noopener"
-      className="max-w-[11rem] truncate rounded text-xs text-cc-text-muted underline decoration-dotted underline-offset-2 outline-none hover:text-cc-accent focus-visible:text-cc-accent focus-visible:ring-1 focus-visible:ring-cc-accent"
+      className="shrink-0 rounded text-xs text-cc-text-muted underline decoration-dotted underline-offset-2 outline-none hover:text-cc-accent focus-visible:text-cc-accent focus-visible:ring-1 focus-visible:ring-cc-accent"
     >
-      {label}
+      {repoName}
     </a>
   ) : (
-    // No URL: a project whose web pages are addressed by ID rather than by
-    // organization and repository name (GitLab, GitHub App). Plain text beats a
+    // No URL: a slug this host still cannot address (a still-unverified VCS
+    // shape, or a record that plainly said no page exists). Plain text beats a
     // link that 404s -- and after issue #182 this branch is also reached when
     // the *record* says so while the environment's VCS type would happily have
     // produced a name-addressed link.
-    <span className="max-w-[11rem] truncate text-xs text-cc-text-muted">
-      {label}
-    </span>
+    <span className="shrink-0 text-xs text-cc-text-muted">{repoName}</span>
   );
 
   return (
@@ -286,7 +364,17 @@ export function ProjectIdentity() {
       className="flex min-w-0 shrink items-center gap-1.5"
       data-testid="project-identity"
     >
-      <Tooltip content={identityTooltip}>{identity}</Tooltip>
+      <span className="flex max-w-[11rem] items-center overflow-hidden whitespace-nowrap">
+        <Tooltip content={orgTooltip}>{orgElement}</Tooltip>
+        {repoName ? (
+          <>
+            <span aria-hidden="true" className="text-cc-text-muted">
+              /
+            </span>
+            <Tooltip content={repoIdentityTooltip}>{repoElement}</Tooltip>
+          </>
+        ) : null}
+      </span>
       {status ? (
         <Tooltip content={status.explanation}>
           <span tabIndex={0} className="shrink-0">

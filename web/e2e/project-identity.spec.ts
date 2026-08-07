@@ -24,22 +24,31 @@ test('the top bar names the organization and project, and links to the CircleCI 
   const identity = page.getByTestId('project-identity');
   await expect(identity).toBeVisible();
 
-  // CircleCI's own organization name, once the project lookup lands.
-  const link = identity.getByRole('link');
-  await expect(link).toHaveText('example/widgets');
-  await expect(link).toHaveAttribute(
+  // Issue #20: the organization and the project are two independent links,
+  // not one label. CircleCI's own organization name, once the lookup lands.
+  const orgLink = identity.getByRole('link', { name: 'example' });
+  await expect(orgLink).toHaveAttribute(
+    'href',
+    'https://app.circleci.com/pipelines/gh/example',
+  );
+  await expect(orgLink).toHaveAttribute('target', '_blank');
+
+  const repoLink = identity.getByRole('link', { name: 'widgets' });
+  await expect(repoLink).toHaveAttribute(
     'href',
     'https://app.circleci.com/projects/gh/example/widgets',
   );
-  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(repoLink).toHaveAttribute('target', '_blank');
 
   // A confirmed project carries no caveat badge.
   await expect(identity.getByText('Unverified')).toHaveCount(0);
   await expect(identity.getByText('Unknown to CircleCI')).toHaveCount(0);
 
   // Keyboard-reachable, like every other affordance here.
-  await link.focus();
-  await expect(link).toBeFocused();
+  await orgLink.focus();
+  await expect(orgLink).toBeFocused();
+  await repoLink.focus();
+  await expect(repoLink).toBeFocused();
 });
 
 test('a config outside a CircleCI project says exactly that, not that CircleCI is unreachable', async ({
@@ -88,32 +97,77 @@ test('a project CircleCI does not recognise is badged differently from one it co
   const identity = page.getByTestId('project-identity');
   await expect(identity.getByText('Unknown to CircleCI')).toBeVisible();
   await expect(identity.getByText('Unverified')).toHaveCount(0);
-  // The identity is still shown: it remains what this checkout claims to be.
-  await expect(identity.getByRole('link')).toHaveText('example/widgets');
+  // The identity is still shown: it remains what this checkout claims to be,
+  // as two independently-linked halves (issue #20).
+  await expect(identity.getByRole('link', { name: 'example' })).toBeVisible();
+  await expect(identity.getByRole('link', { name: 'widgets' })).toBeVisible();
 });
 
 /**
- * Issue #182. A GitHub App or GitLab project's canonical slug is
- * `circleci/<org-id>/<project-id>`, which has no name-addressed page in the web
- * UI, so the host sends no `project.webUrl`. `GET /api/meta` still carries the
- * URL it derived from the injected environment, and the top bar must ignore it:
+ * Issue #20's third item, end to end: a 404'd lookup carrying a near-miss
+ * candidate names it in the badge's tooltip -- the reported case, a checkout
+ * of `some-org/flakey-widgets` against a CircleCI project actually called
+ * `flaky-widgets`.
+ */
+test('a 404 with a near-miss candidate names it in the badge’s tooltip', async ({
+  page,
+}) => {
+  await mockHostApi(page, {
+    projectSlug: 'gh/some-org/flakey-widgets',
+    projectContext: {
+      available: true,
+      projectSlug: 'gh/some-org/flakey-widgets',
+      contexts: [],
+      projectVariables: [],
+      warnings: [
+        {
+          kind: 'project',
+          headline: 'No CircleCI project matches gh/some-org/flakey-widgets.',
+          detail:
+            'The CircleCI API returned HTTP 404 for that project slug. Most often that means this repository has not been set up on CircleCI.',
+          consequences: ["This project's settings are not shown."],
+          candidates: ['flaky-widgets'],
+        },
+      ],
+    },
+  });
+  await page.goto('/');
+
+  const identity = page.getByTestId('project-identity');
+  const badge = identity.getByText('Unknown to CircleCI');
+  await expect(badge).toBeVisible();
+
+  await badge.hover();
+  const tooltip = page.getByRole('tooltip');
+  await expect(tooltip).toContainText('some-org/flaky-widgets');
+  await expect(tooltip).toContainText('did you mean that one?');
+});
+
+/**
+ * Issue #182, still true after issue #20: a GitLab *OAuth* project's route was
+ * never verified against a live one (unlike a *standalone* project's -- see
+ * the test below), so the host sends no `project.webUrl` or
+ * `project.organizationWebUrl` for it. `GET /api/meta` still carries the URLs
+ * it derived from the injected environment, and the top bar must ignore both:
  * a confident link to a page shaped for a different kind of project is the
  * wrong-path defect the owner reported.
  */
-test('a project CircleCI addresses by ID is shown as plain text, not linked from the environment', async ({
+test('a project this host has no verified page for is shown as plain text, not linked from the environment', async ({
   page,
 }) => {
   await mockHostApi(page, {
     projectContext: {
       available: true,
-      projectSlug: 'circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
+      projectSlug: 'gl/example/widgets',
       project: {
         name: 'widgets',
-        slug: 'circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
+        slug: 'gl/example/widgets',
         organizationName: 'example',
-        organizationSlug: 'circleci/PBz3EbdyZmZ4jNfLQCdXhs',
+        organizationSlug: 'gl/example',
         vcsProvider: 'GitLab',
         defaultBranch: 'main',
+        // No webUrl, no organizationWebUrl: this route's shape has never
+        // been checked against a live GitLab OAuth project.
       },
       contexts: [],
       projectVariables: [],
@@ -129,6 +183,52 @@ test('a project CircleCI addresses by ID is shown as plain text, not linked from
   await expect(identity.getByText('Unknown to CircleCI')).toHaveCount(0);
 });
 
+/**
+ * Issue #20's second item, the positive case: a standalone (GitLab / GitHub
+ * App) project's opaque-ID slug now gets both links, because
+ * `Environment.ProjectWebURLForSlug` and `Environment.OrgWebURLForSlug` were
+ * verified live against a real standalone project and organization (see
+ * `overviewRouteVCS` on the host side). Before this issue, a `circleci/...`
+ * slug never got a link at all -- this is the test the one above used to be.
+ */
+test('a standalone project’s ID-addressed slug is linked, both organization and project', async ({
+  page,
+}) => {
+  await mockHostApi(page, {
+    projectContext: {
+      available: true,
+      projectSlug: 'circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
+      project: {
+        name: 'widgets',
+        slug: 'circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
+        organizationName: 'example',
+        organizationSlug: 'circleci/PBz3EbdyZmZ4jNfLQCdXhs',
+        vcsProvider: 'GitLab',
+        defaultBranch: 'main',
+        webUrl:
+          'https://app.circleci.com/projects/circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
+        organizationWebUrl:
+          'https://app.circleci.com/pipelines/circleci/PBz3EbdyZmZ4jNfLQCdXhs',
+      },
+      contexts: [],
+      projectVariables: [],
+    },
+  });
+  await page.goto('/');
+
+  const identity = page.getByTestId('project-identity');
+  await expect(identity.getByRole('link', { name: 'example' })).toHaveAttribute(
+    'href',
+    'https://app.circleci.com/pipelines/circleci/PBz3EbdyZmZ4jNfLQCdXhs',
+  );
+  await expect(identity.getByRole('link', { name: 'widgets' })).toHaveAttribute(
+    'href',
+    'https://app.circleci.com/projects/circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
+  );
+  await expect(identity.getByText('Unverified')).toHaveCount(0);
+  await expect(identity.getByText('Unknown to CircleCI')).toHaveCount(0);
+});
+
 test('with no token the project is shown but marked unverified', async ({
   page,
 }) => {
@@ -137,7 +237,8 @@ test('with no token the project is shown but marked unverified', async ({
 
   const identity = page.getByTestId('project-identity');
   await expect(identity.getByText('Unverified')).toBeVisible();
-  await expect(identity.getByRole('link')).toHaveText('example/widgets');
+  await expect(identity.getByRole('link', { name: 'example' })).toBeVisible();
+  await expect(identity.getByRole('link', { name: 'widgets' })).toBeVisible();
   await expect(identity.getByText('Not a CircleCI project')).toHaveCount(0);
 });
 

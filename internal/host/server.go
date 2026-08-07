@@ -380,6 +380,11 @@ type projectMetadataClient interface {
 	ListContextVariables(ctx context.Context, contextID string) ([]circleci.ContextVariable, error)
 	ListContextRestrictions(ctx context.Context, contextID string) ([]circleci.ContextRestriction, error)
 	ListProjectVariables(ctx context.Context, projectSlug string) ([]circleci.ProjectVariable, error)
+
+	// ListFollowedProjects backs the near-miss suggestion on a 404'd project
+	// lookup (issue #20) -- see projectNearMissCandidates. Also a read: it
+	// lists what the token can already see, and writes nothing.
+	ListFollowedProjects(ctx context.Context) ([]circleci.FollowedProject, error)
 }
 
 // cacheWarmer is implemented by *orbs.Cache. It is kept separate from the

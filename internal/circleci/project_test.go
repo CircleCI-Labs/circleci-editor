@@ -224,6 +224,42 @@ func TestGetProject(t *testing.T) {
 	assert.Assert(t, is.Contains((*seen)[0], "/api/v2/project/github/acme/web"))
 }
 
+// TestListFollowedProjects_DecodesTheThreeIdentifyingFields pins the
+// deliberately narrow decode this method performs (issue #20): the fixture
+// below includes a `branches` field shaped like the live v1.1 API's own
+// (recent build outcomes per branch) specifically to prove it is ignored
+// rather than decoded into anything this package holds on to.
+func TestListFollowedProjects_DecodesTheThreeIdentifyingFields(t *testing.T) {
+	client, seen := newProjectTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[
+			{
+				"username":"acme","reponame":"web","vcs_type":"github",
+				"branches":{"main":{"recent_builds":[{"status":"success","build_num":42}]}}
+			},
+			{"username":"acme","reponame":"widgets","vcs_type":"github"}
+		]`))
+	})
+
+	projects, err := client.ListFollowedProjects(context.Background())
+	assert.NilError(t, err)
+	assert.Equal(t, len(projects), 2)
+	assert.Equal(t, projects[0], circleci.FollowedProject{Org: "acme", Repo: "web", VCSType: "github"})
+	assert.Equal(t, projects[1], circleci.FollowedProject{Org: "acme", Repo: "widgets", VCSType: "github"})
+
+	assert.Assert(t, is.Contains((*seen)[0], "/api/v1.1/projects"))
+}
+
+func TestListFollowedProjects_SurfacesUpstreamFailure(t *testing.T) {
+	client, _ := newProjectTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Permission denied"}`))
+	})
+
+	_, err := client.ListFollowedProjects(context.Background())
+	assert.Assert(t, err != nil)
+	assert.Assert(t, circleci.IsForbidden(err))
+}
+
 // TestGetProjectSettings_UsesV3 pins both the version choice and the field
 // names: v3 is the one endpoint in this file with a usable v3 form, and it
 // names enable_dynamic_config directly where v2 only has

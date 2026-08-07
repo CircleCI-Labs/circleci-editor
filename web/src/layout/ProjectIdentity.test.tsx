@@ -8,6 +8,7 @@ import { resetProjectContextStoreForTests } from '~/state/projectContextStore';
 import {
   ProjectIdentity,
   slugProvenance,
+  unknownToCircleCIExplanation,
   unreadableBindingTooltip,
 } from './ProjectIdentity';
 
@@ -29,6 +30,9 @@ const META: rpcClient.Meta = {
   cwd: '/repo',
   csrfToken: 'test-csrf-token',
   projectWebUrl: 'https://app.circleci.com/projects/gh/acme/web',
+  // The organization half of issue #20's link pair, available on the same
+  // "no token, no request" terms as projectWebUrl.
+  orgWebUrl: 'https://app.circleci.com/pipelines/gh/acme',
   // The ordinary case (issue #198): no `.circleci/info.yml`, so the identity
   // comes from the CLI-injected environment. Never an error -- most checkouts
   // have never been linked.
@@ -59,6 +63,7 @@ function readyResponse(
       vcsProvider: 'GitHub',
       defaultBranch: 'trunk',
       webUrl: 'https://app.circleci.com/projects/gh/acme/web',
+      organizationWebUrl: 'https://app.circleci.com/pipelines/gh/acme',
     },
     contexts: [],
     projectVariables: [],
@@ -95,8 +100,16 @@ describe('ProjectIdentity', () => {
     render(<ProjectIdentity />);
 
     // The environment's own spelling, before the project record arrives --
-    // this element must never be a spinner in the top bar.
-    expect(screen.getByRole('link', { name: 'acme/web' })).toBeInTheDocument();
+    // this element must never be a spinner in the top bar. Issue #20: the
+    // organization is now its own link, separate from the project's.
+    expect(screen.getByRole('link', { name: 'acme' })).toHaveAttribute(
+      'href',
+      'https://app.circleci.com/pipelines/gh/acme',
+    );
+    expect(screen.getByRole('link', { name: 'web' })).toHaveAttribute(
+      'href',
+      'https://app.circleci.com/projects/gh/acme/web',
+    );
     await flushLoad();
   });
 
@@ -105,14 +118,20 @@ describe('ProjectIdentity', () => {
     setMeta();
     render(<ProjectIdentity />);
 
-    const link = await screen.findByRole('link', { name: 'Acme Corp/web' });
-    expect(link).toHaveAttribute(
+    const orgLink = await screen.findByRole('link', { name: 'Acme Corp' });
+    expect(orgLink).toHaveAttribute(
+      'href',
+      'https://app.circleci.com/pipelines/gh/acme',
+    );
+    const repoLink = screen.getByRole('link', { name: 'web' });
+    expect(repoLink).toHaveAttribute(
       'href',
       'https://app.circleci.com/projects/gh/acme/web',
     );
     // Deep-linking out opens the web UI rather than navigating this
     // single-page tool away from an unsaved config.
-    expect(link).toHaveAttribute('target', '_blank');
+    expect(orgLink).toHaveAttribute('target', '_blank');
+    expect(repoLink).toHaveAttribute('target', '_blank');
 
     // A confirmed project needs no badge; the absence of one is the signal.
     expect(screen.queryByText(/unverified/i)).not.toBeInTheDocument();
@@ -129,7 +148,11 @@ describe('ProjectIdentity', () => {
       contexts: [],
       projectVariables: [],
     });
-    setMeta({ projectSlug: '', projectWebUrl: undefined });
+    setMeta({
+      projectSlug: '',
+      projectWebUrl: undefined,
+      orgWebUrl: undefined,
+    });
     render(<ProjectIdentity />);
 
     expect(screen.getByText('Not a CircleCI project')).toBeInTheDocument();
@@ -159,8 +182,10 @@ describe('ProjectIdentity', () => {
     render(<ProjectIdentity />);
 
     expect(await screen.findByText('Unverified')).toBeInTheDocument();
-    // The identity itself is still shown -- it is what the checkout claims.
-    expect(screen.getByRole('link', { name: 'acme/web' })).toBeInTheDocument();
+    // The identity itself is still shown -- it is what the checkout claims --
+    // and both halves are still separately linked from the environment alone.
+    expect(screen.getByRole('link', { name: 'acme' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'web' })).toBeInTheDocument();
     expect(screen.queryByText(/unknown to circleci/i)).not.toBeInTheDocument();
   });
 
@@ -197,36 +222,107 @@ describe('ProjectIdentity', () => {
     render(<ProjectIdentity />);
 
     expect(await screen.findByText('Unverified')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'acme/web' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'acme' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'web' })).toBeInTheDocument();
   });
 
-  it('renders plain text, not a broken link, when the host could not build a URL', async () => {
+  /**
+   * Issue #20's second item: a standalone project's opaque-ID slug now gets a
+   * real overview link, because that route's shape was verified live against
+   * a real standalone project (see `Environment.ProjectWebURLForSlug`'s doc
+   * comment on the host side). Before this issue, `circleci/...` slugs never
+   * got a link at all.
+   */
+  it('links a standalone project’s ID-addressed slug, since issue #20', async () => {
     vi.mocked(rpcClient.getProjectContext).mockResolvedValue(
       readyResponse({
         project: {
           ...readyResponse().project!,
           slug: 'circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
-          webUrl: undefined,
+          organizationSlug: 'circleci/PBz3EbdyZmZ4jNfLQCdXhs',
+          webUrl:
+            'https://app.circleci.com/projects/circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
+          organizationWebUrl:
+            'https://app.circleci.com/pipelines/circleci/PBz3EbdyZmZ4jNfLQCdXhs',
         },
       }),
     );
-    // A GitLab / GitHub App project: addressed by ID in the web UI, so the host
-    // deliberately sends no URL.
     setMeta({ projectSlug: 'circleci/acme/web', projectWebUrl: undefined });
     render(<ProjectIdentity />);
 
+    const repoLink = await screen.findByRole('link', { name: 'web' });
+    expect(repoLink).toHaveAttribute(
+      'href',
+      'https://app.circleci.com/projects/circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
+    );
+    expect(screen.getByRole('link', { name: 'Acme Corp' })).toHaveAttribute(
+      'href',
+      'https://app.circleci.com/pipelines/circleci/PBz3EbdyZmZ4jNfLQCdXhs',
+    );
+  });
+
+  /**
+   * A slug this host still cannot address at all -- unlike the standalone
+   * case above, this route's shape was never verified (a GitLab OAuth
+   * project's `gl/...` page). Plain text beats a link that 404s, for both
+   * halves independently.
+   */
+  it('renders plain text, not a broken link, when the host could not build a URL', async () => {
+    vi.mocked(rpcClient.getProjectContext).mockResolvedValue(
+      readyResponse({
+        project: {
+          ...readyResponse().project!,
+          slug: 'gl/acme/web',
+          organizationSlug: 'gl/acme',
+          vcsProvider: 'GitLab',
+          webUrl: undefined,
+          organizationWebUrl: undefined,
+        },
+      }),
+    );
+    setMeta({ projectSlug: 'gl/acme/web', projectWebUrl: undefined });
+    render(<ProjectIdentity />);
+
     await flushLoad();
-    expect(screen.getByText('Acme Corp/web')).toBeInTheDocument();
+    expect(screen.getByText('Acme Corp')).toBeInTheDocument();
+    expect(screen.getByText('web')).toBeInTheDocument();
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The two halves supersede independently: a project record can carry one
+   * URL without the other, and this host must not couple them just because
+   * they render side by side.
+   */
+  it('links the organization even when the project itself has no verified page', async () => {
+    vi.mocked(rpcClient.getProjectContext).mockResolvedValue(
+      readyResponse({
+        project: {
+          ...readyResponse().project!,
+          slug: 'gl/acme/web',
+          webUrl: undefined,
+          // The organization link is untouched by the project's own refusal.
+          organizationWebUrl: 'https://app.circleci.com/pipelines/gh/acme',
+        },
+      }),
+    );
+    setMeta({ projectSlug: 'gl/acme/web', projectWebUrl: undefined });
+    render(<ProjectIdentity />);
+
+    expect(
+      await screen.findByRole('link', { name: 'Acme Corp' }),
+    ).toHaveAttribute('href', 'https://app.circleci.com/pipelines/gh/acme');
+    // The project half is still plain text.
+    expect(screen.getByText('web')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'web' })).not.toBeInTheDocument();
   });
 
   /**
    * Issue #182. The environment's link and CircleCI's link can disagree, and
    * CircleCI's must win -- including when CircleCI's answer is "there is no
-   * name-addressed page for this project", which is what a GitHub App or GitLab
-   * project's `circleci/<org-id>/<project-id>` slug means. Falling back to the
-   * environment-derived URL there would hand the user a confident link to a page
-   * shaped for a different kind of project.
+   * verified page for this project's VCS shape". Falling back to the
+   * environment-derived URL there would hand the user a confident link to a
+   * page shaped for a different kind of project.
    */
   it('prefers CircleCI’s own link over the environment’s once the record arrives', async () => {
     vi.mocked(rpcClient.getProjectContext).mockResolvedValue(
@@ -243,30 +339,33 @@ describe('ProjectIdentity', () => {
     setMeta();
     render(<ProjectIdentity />);
 
-    const link = await screen.findByRole('link', { name: 'Acme Corp/web' });
+    const link = await screen.findByRole('link', { name: 'web' });
     expect(link).toHaveAttribute(
       'href',
       'https://app.circleci.com/projects/gh/Acme/Web',
     );
   });
 
-  it('drops the environment’s link entirely when the record has none', async () => {
+  it('drops the environment’s links entirely when the record has none', async () => {
     vi.mocked(rpcClient.getProjectContext).mockResolvedValue(
       readyResponse({
         project: {
           ...readyResponse().project!,
-          slug: 'circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF',
+          slug: 'gl/acme/web',
+          organizationSlug: 'gl/acme',
           webUrl: undefined,
+          organizationWebUrl: undefined,
         },
       }),
     );
-    // `meta` still carries a perfectly well-formed name-addressed URL, built
-    // from an injected VCS type that does not describe how this project is
-    // addressed. It must not be used.
+    // `meta` still carries perfectly well-formed environment-derived URLs,
+    // built from an assumed VCS type that does not describe how this project
+    // (or its organization) is actually addressed. Neither must be used.
     setMeta();
     render(<ProjectIdentity />);
 
-    expect(await screen.findByText('Acme Corp/web')).toBeInTheDocument();
+    expect(await screen.findByText('Acme Corp')).toBeInTheDocument();
+    expect(screen.getByText('web')).toBeInTheDocument();
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });
 
@@ -349,6 +448,113 @@ describe('ProjectIdentity', () => {
           projectSlugSource: undefined,
         }),
       ).toBe('');
+    });
+  });
+
+  /**
+   * Issue #20's third item: a 404'd lookup gets a near-miss suggestion when
+   * exactly one candidate is within a typo's distance of the tried slug, and
+   * stays exactly as silent as before otherwise. `unknownToCircleCIExplanation`
+   * is the exported, pure half of the "Unknown to CircleCI" badge's tooltip --
+   * tested directly for the same reason `slugProvenance` is.
+   */
+  describe('the near-miss suggestion (issue #20)', () => {
+    it('names the near-miss project when exactly one is within a typo’s distance', () => {
+      const explanation = unknownToCircleCIExplanation(
+        {
+          kind: 'project',
+          headline: 'No CircleCI project matches gh/some-org/flakey-widgets.',
+          detail:
+            'The CircleCI API returned HTTP 404 for that project slug. Most often that means this repository has not been set up on CircleCI.',
+          candidates: ['flaky-widgets', 'completely-different-name'],
+        },
+        'gh/some-org/flakey-widgets',
+        'some-org',
+      );
+
+      expect(explanation).toContain(
+        'The CircleCI API returned HTTP 404 for that project slug.',
+      );
+      expect(explanation).toContain('some-org/flaky-widgets');
+      expect(explanation).toContain('did you mean that one?');
+    });
+
+    it('stays silent when the repository genuinely is not set up', () => {
+      // No candidate is close enough (edit distance beyond a typo), which is
+      // the ordinary case: most 404s are exactly what they say they are.
+      const explanation = unknownToCircleCIExplanation(
+        {
+          kind: 'project',
+          headline: 'No CircleCI project matches gh/acme/web.',
+          detail: 'The CircleCI API returned HTTP 404 for that project slug.',
+          candidates: ['completely-unrelated-project'],
+        },
+        'gh/acme/web',
+        'acme',
+      );
+
+      expect(explanation).not.toContain('did you mean');
+    });
+
+    it('stays silent when two candidates are equally close, rather than guessing', () => {
+      const explanation = unknownToCircleCIExplanation(
+        {
+          kind: 'project',
+          headline: 'No CircleCI project matches gh/acme/widget.',
+          detail: 'The CircleCI API returned HTTP 404 for that project slug.',
+          // Both one edit away from "widget" -- a tie is ambiguity, and
+          // `nearestUnique` declines rather than picking one arbitrarily.
+          candidates: ['widgets', 'widget1'],
+        },
+        'gh/acme/widget',
+        'acme',
+      );
+
+      expect(explanation).not.toContain('did you mean');
+    });
+
+    it('stays silent when there are no candidates at all', () => {
+      const explanation = unknownToCircleCIExplanation(
+        {
+          kind: 'project',
+          headline: 'No CircleCI project matches gh/acme/web.',
+          detail: 'The CircleCI API returned HTTP 404 for that project slug.',
+        },
+        'gh/acme/web',
+        'acme',
+      );
+
+      expect(explanation).not.toContain('did you mean');
+    });
+
+    it('renders the suggestion in the rendered top bar, not only in the helper', async () => {
+      vi.mocked(rpcClient.getProjectContext).mockResolvedValue(
+        readyResponse({
+          project: undefined,
+          projectSlug: 'gh/some-org/flakey-widgets',
+          warnings: [
+            {
+              kind: 'project',
+              headline:
+                'No CircleCI project matches gh/some-org/flakey-widgets.',
+              detail:
+                'The CircleCI API returned HTTP 404 for that project slug.',
+              candidates: ['flaky-widgets'],
+            },
+          ],
+        }),
+      );
+      setMeta({
+        projectSlug: 'gh/some-org/flakey-widgets',
+        projectWebUrl: undefined,
+      });
+      render(<ProjectIdentity />);
+
+      const badge = await screen.findByText('Unknown to CircleCI');
+      expect(badge).toBeInTheDocument();
+      // The tooltip text itself is Radix content, mounted on hover; the badge
+      // being present at all is this test's job, the wording is
+      // `unknownToCircleCIExplanation`'s, asserted directly above.
     });
   });
 

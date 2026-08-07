@@ -65,6 +65,16 @@ type fakeProjectClient struct {
 	projectVariables    []circleci.ProjectVariable
 	projectVariablesErr error
 
+	// followedProjects and followedProjectsErr back ListFollowedProjects, the
+	// near-miss suggestion's data source (issue #20). Unset (nil, nil) in
+	// every fixture that does not care: that reads as "this token follows no
+	// projects", which is a perfectly fine thing for
+	// projectNearMissCandidates to receive and never something that needs a
+	// warning of its own.
+	followedProjects      []circleci.FollowedProject
+	followedProjectsErr   error
+	followedProjectsCalls int
+
 	gotOwner       circleci.ContextOwner
 	gotContextID   string
 	gotProjectSlug string
@@ -112,6 +122,11 @@ func (f *fakeProjectClient) ListContextRestrictions(_ context.Context, _ string)
 func (f *fakeProjectClient) ListProjectVariables(_ context.Context, projectSlug string) ([]circleci.ProjectVariable, error) {
 	f.gotVariablesSlug = projectSlug
 	return f.projectVariables, f.projectVariablesErr
+}
+
+func (f *fakeProjectClient) ListFollowedProjects(_ context.Context) ([]circleci.FollowedProject, error) {
+	f.followedProjectsCalls++
+	return f.followedProjects, f.followedProjectsErr
 }
 
 // projectContextEnv describes the CLI-injected environment a test wants.
@@ -196,14 +211,15 @@ type projectContextBody struct {
 	Reason      string `json:"reason"`
 	ProjectSlug string `json:"projectSlug"`
 	Project     *struct {
-		Name             string `json:"name"`
-		Slug             string `json:"slug"`
-		OrganizationName string `json:"organizationName"`
-		OrganizationSlug string `json:"organizationSlug"`
-		VCSProvider      string `json:"vcsProvider"`
-		DefaultBranch    string `json:"defaultBranch"`
-		WebURL           string `json:"webUrl"`
-		SettingsURL      string `json:"settingsUrl"`
+		Name               string `json:"name"`
+		Slug               string `json:"slug"`
+		OrganizationName   string `json:"organizationName"`
+		OrganizationSlug   string `json:"organizationSlug"`
+		VCSProvider        string `json:"vcsProvider"`
+		DefaultBranch      string `json:"defaultBranch"`
+		WebURL             string `json:"webUrl"`
+		SettingsURL        string `json:"settingsUrl"`
+		OrganizationWebURL string `json:"organizationWebUrl"`
 	} `json:"project"`
 	Settings *struct {
 		DynamicConfig     bool `json:"dynamicConfig"`
@@ -231,6 +247,9 @@ type warningBody struct {
 	// Suggestions is what to do about it (issue #198), in the CircleCI CLI's
 	// own words where there is one.
 	Suggestions []string `json:"suggestions"`
+	// Candidates lists other repository names visible to this token, in the
+	// same organization, for the near-miss suggestion (issue #20).
+	Candidates []string `json:"candidates"`
 }
 
 // text flattens a warning into one string, for the assertions that only care
@@ -390,9 +409,21 @@ func TestServer_ProjectContext_PrefersTheCanonicalSlug(t *testing.T) {
 // The record's slug is the only thing that knows, which is why the link is built
 // from it. Empty here is a real answer -- the client renders plain text and does
 // not fall back to GET /api/meta's environment-derived URL.
-func TestServer_ProjectContext_StandaloneProjectGetsNoWebURL(t *testing.T) {
+// TestServer_ProjectContext_StandaloneProjectGetsAWebURL covers issue #20's
+// second item: a standalone (GitLab / GitHub App) project's opaque-ID slug now
+// gets an overview link, because that route's shape was verified live against
+// a real standalone project (see host.overviewRouteVCS) -- it is no longer
+// refused just for carrying "circleci" as its VCS segment.
+//
+// The settings link is the deliberate exception, named in the test below this
+// one: ProjectSettingsWebURLForSlug's route was never itself checked against a
+// live standalone project, so it stays refused. Both links being gated by the
+// same map before this issue was never a promise that they would change
+// together.
+func TestServer_ProjectContext_StandaloneProjectGetsAWebURL(t *testing.T) {
 	client := fullFakeClient()
 	client.project.Slug = "circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF"
+	client.project.OrganizationSlug = "circleci/PBz3EbdyZmZ4jNfLQCdXhs"
 	client.project.VCSProvider = "GitHub"
 	ts := newProjectContextTestServer(t, connectedEnv(), client)
 
@@ -404,16 +435,38 @@ func TestServer_ProjectContext_StandaloneProjectGetsNoWebURL(t *testing.T) {
 
 	assert.Assert(t, got.Project != nil)
 	assert.Equal(t, got.Project.Slug, "circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF")
-	assert.Equal(t, got.Project.WebURL, "")
-	// Same ID-addressed refusal applies to the settings link (issue #248).
-	assert.Equal(t, got.Project.SettingsURL, "")
+	assert.Equal(t, got.Project.WebURL,
+		"https://app.circleci.com/projects/circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF")
+	assert.Equal(t, got.Project.OrganizationWebURL,
+		"https://app.circleci.com/pipelines/circleci/PBz3EbdyZmZ4jNfLQCdXhs")
 	assert.Equal(t, got.ProjectSlug, "circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF")
 
 	// A meta response built from the same environment still offers its own
 	// (name-addressed) link, which is correct for what it knows and is exactly
-	// why a client holding a record must ignore it.
+	// why a client holding a record must ignore it in favour of the record's
+	// own webUrl/organizationWebUrl above.
 	_, metaBody := doRequest(t, ts, http.MethodGet, "/api/meta", nil)
 	assert.Assert(t, is.Contains(metaBody, "/projects/gh/acme/web"))
+}
+
+// TestServer_ProjectContext_StandaloneProjectStillGetsNoSettingsURL is the
+// half of issue #20 that deliberately did not move: unlike the overview and
+// organization-pipelines routes, `/settings/project/circleci/<org-id>/<project-id>`
+// was never checked against a live standalone project, so
+// ProjectSettingsWebURLForSlug keeps refusing it. See overviewRouteVCS for why
+// that predicate, not nameAddressedVCSSegments, is what changed.
+func TestServer_ProjectContext_StandaloneProjectStillGetsNoSettingsURL(t *testing.T) {
+	client := fullFakeClient()
+	client.project.Slug = "circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF"
+	client.project.VCSProvider = "GitHub"
+	ts := newProjectContextTestServer(t, connectedEnv(), client)
+
+	_, body := doRequest(t, ts, http.MethodGet, "/api/project-context", nil)
+
+	var got projectContextBody
+	assert.NilError(t, json.Unmarshal([]byte(body), &got))
+	assert.Assert(t, got.Project != nil)
+	assert.Equal(t, got.Project.SettingsURL, "")
 }
 
 // TestServer_ProjectContext_NoToken is one half of the degrade-honestly
@@ -1041,6 +1094,106 @@ func TestServer_ProjectContext_ProjectLookupFailureBranches(t *testing.T) {
 	}
 }
 
+// TestServer_ProjectContext_NearMissCandidates covers issue #20's third item:
+// a 404'd project lookup carries the raw list of other repository names this
+// token can see in the same organization, for the client's own `nearestUnique`
+// to judge. This host decides nothing about which (if any) is a near miss --
+// see warningPayload.Candidates and projectNearMissCandidates.
+func TestServer_ProjectContext_NearMissCandidates(t *testing.T) {
+	// The reported case (issue #20): a checkout named some-org/flakey-widgets
+	// against a CircleCI project actually called flaky-widgets.
+	client := fullFakeClient()
+	client.project = nil
+	client.projectErr = &circleci.APIError{StatusCode: http.StatusNotFound}
+	client.followedProjects = []circleci.FollowedProject{
+		{Org: "some-org", Repo: "flaky-widgets", VCSType: "github"},
+		// Same repository name, but neither the right organization nor the
+		// right VCS -- both must be filtered out rather than offered as if
+		// they were candidates in the organization that actually 404'd.
+		{Org: "other-org", Repo: "flaky-widgets", VCSType: "github"},
+		{Org: "some-org", Repo: "flaky-widgets", VCSType: "bitbucket"},
+		// A second, genuinely unrelated project in the right organization:
+		// present in the list, because filtering is by organization and VCS
+		// only. Whether it is close enough to count as a near miss is
+		// `nearestUnique`'s decision, not this host's.
+		{Org: "some-org", Repo: "completely-different-name", VCSType: "github"},
+	}
+
+	env := connectedEnv()
+	env.org, env.repo = "some-org", "flakey-widgets"
+	ts := newProjectContextTestServer(t, env, client)
+
+	_, body := doRequest(t, ts, http.MethodGet, "/api/project-context", nil)
+
+	var got projectContextBody
+	assert.NilError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, len(got.Warnings), 1)
+	warning := got.Warnings[0]
+	assert.Equal(t, warning.Kind, "project")
+	assert.DeepEqual(t, warning.Candidates, []string{"flaky-widgets", "completely-different-name"})
+	assert.Equal(t, client.followedProjectsCalls, 1)
+}
+
+// TestServer_ProjectContext_NearMissCandidates_SilentOnFailure: the near-miss
+// list is a best-effort enhancement to a 404 message that is already complete
+// and honest without it, so a failure to fetch it degrades to no candidates --
+// never to a second warning the existing 404 tests do not expect, and never to
+// a crash.
+func TestServer_ProjectContext_NearMissCandidates_SilentOnFailure(t *testing.T) {
+	logs := captureHostLog(t)
+
+	client := fullFakeClient()
+	client.project = nil
+	client.projectErr = &circleci.APIError{StatusCode: http.StatusNotFound}
+	client.followedProjectsErr = &circleci.APIError{StatusCode: http.StatusForbidden}
+	ts := newProjectContextTestServer(t, connectedEnv(), client)
+
+	_, body := doRequest(t, ts, http.MethodGet, "/api/project-context", nil)
+
+	var got projectContextBody
+	assert.NilError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, len(got.Warnings), 1)
+	assert.Equal(t, len(got.Warnings[0].Candidates), 0)
+
+	// Still logged, on the "nothing upstream fails silently" rule every other
+	// call in this file follows -- even though nothing user-facing says so.
+	assert.Assert(t, is.Contains(logs.String(), "near-miss"))
+}
+
+// TestServer_ProjectContext_NearMissCandidates_SkippedForNonNotFound: spending
+// a second upstream call chasing a typo theory makes sense only when the
+// first call actually said "no such project" -- a 401/403/429/5xx/timeout is
+// about the token, the network or CircleCI, not about the slug.
+func TestServer_ProjectContext_NearMissCandidates_SkippedForNonNotFound(t *testing.T) {
+	client := fullFakeClient()
+	client.project = nil
+	client.projectErr = &circleci.APIError{StatusCode: http.StatusUnauthorized}
+	ts := newProjectContextTestServer(t, connectedEnv(), client)
+
+	doRequest(t, ts, http.MethodGet, "/api/project-context", nil)
+
+	assert.Equal(t, client.followedProjectsCalls, 0)
+}
+
+// TestServer_ProjectContext_NearMissCandidates_SkippedForStandaloneSlugs: the
+// v1.1 API this feature calls predates GitHub App and GitLab standalone
+// projects and has no record shaped like a `circleci/<org-id>/<project-id>`
+// slug to compare against, so the round trip is skipped rather than spent on
+// a call that could only ever come back empty.
+func TestServer_ProjectContext_NearMissCandidates_SkippedForStandaloneSlugs(t *testing.T) {
+	client := fullFakeClient()
+	client.project = nil
+	client.projectErr = &circleci.APIError{StatusCode: http.StatusNotFound}
+
+	env := connectedEnv()
+	env.vcsType, env.org, env.repo = "circleci", "org-id", "project-id"
+	ts := newProjectContextTestServer(t, env, client)
+
+	doRequest(t, ts, http.MethodGet, "/api/project-context", nil)
+
+	assert.Equal(t, client.followedProjectsCalls, 0)
+}
+
 // TestServer_ProjectContext_LogLineCannotBeForged: the slug in a log line comes
 // from environment variables this host did not choose, and the error text
 // (indirectly) from a remote server. Neither may smuggle a newline and invent a
@@ -1207,11 +1360,13 @@ func TestEnvironment_ProjectWebURL(t *testing.T) {
 			want: "https://circleci.example.com/projects/gh/acme/web",
 		},
 		{
-			// GitLab/GitHub App projects: the web UI addresses these by ID,
-			// which a name-based slug cannot produce, so no link is offered
-			// rather than one that 404s.
-			name: "an unlinkable vcs type yields no url",
+			// A standalone (GitLab / GitHub App) project: the web UI addresses
+			// these by ID rather than by name, and issue #20 verified live that
+			// the overview route still fits -- the IDs simply occupy the same
+			// path segments a name would. See overviewRouteVCS.
+			name: "a standalone project is linkable too, since issue #20",
 			host: "https://circleci.com", vcsType: "circleci", org: "acme", repo: "web",
+			want: "https://app.circleci.com/projects/circleci/acme/web",
 		},
 		{
 			// The CLI emits gl for a GitLab remote, so this host does too --
@@ -1379,12 +1534,17 @@ func TestServer_Meta_CarriesTheProjectWebURL(t *testing.T) {
 		ProjectSlug   string `json:"projectSlug"`
 		HasToken      bool   `json:"hasToken"`
 		ProjectWebURL string `json:"projectWebUrl"`
+		OrgWebURL     string `json:"orgWebUrl"`
 	}
 	assert.NilError(t, json.Unmarshal([]byte(body), &got))
 
 	assert.Equal(t, got.ProjectSlug, "gh/acme/web")
 	assert.Assert(t, !got.HasToken)
 	assert.Equal(t, got.ProjectWebURL, "https://app.circleci.com/projects/gh/acme/web")
+	// The organization half of issue #20's link pair, available on the same
+	// terms as ProjectWebURL: from the CLI-injected environment alone, no
+	// token needed.
+	assert.Equal(t, got.OrgWebURL, "https://app.circleci.com/pipelines/gh/acme")
 }
 
 // TestEnvironment_ProjectWebURLForSlug covers the other half of issue #182: the
@@ -1412,12 +1572,24 @@ func TestEnvironment_ProjectWebURLForSlug(t *testing.T) {
 			want: "https://app.circleci.com/projects/bb/acme/web",
 		},
 		{
-			// A GitHub App or GitLab project. The record's own slug says so,
-			// which is why this is worth keying off rather than the injected
-			// VCS type: such a project can perfectly well sit in an
-			// organization whose other projects are name-addressed.
-			name: "an ID-addressed standalone slug yields no url",
+			// A GitHub App or GitLab project, ID-addressed rather than
+			// name-addressed. Issue #20 verified this exact route against a
+			// live standalone project (see overviewRouteVCS), so this now
+			// yields a URL rather than refusing -- the record's own slug is
+			// what makes this worth keying off rather than the injected VCS
+			// type: such a project can perfectly well sit in an organization
+			// whose other projects are name-addressed.
+			name: "an ID-addressed standalone slug is linkable too, since issue #20",
 			slug: "circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF",
+			want: "https://app.circleci.com/projects/circleci/PBz3EbdyZmZ4jNfLQCdXhs/QqvJmXcbSNvcbFxhVZDPTF",
+		},
+		{
+			// GitLab OAuth (non-standalone) projects still have no verified
+			// route: issue #20's evidence covered "circleci"-addressed
+			// organizations and projects, not "gl" ones. See
+			// nameAddressedVCSSegments' own doc comment.
+			name: "a gitlab oauth project is still unlinked",
+			slug: "gl/acme/web",
 		},
 		{name: "an organization slug is not a project slug", slug: "gh/acme"},
 		{name: "a slug with an empty segment", slug: "gh//web"},
@@ -1428,6 +1600,73 @@ func TestEnvironment_ProjectWebURLForSlug(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			clearCircleEnv(t)
 			assert.Equal(t, host.LoadEnvironment().ProjectWebURLForSlug(tc.slug), tc.want)
+		})
+	}
+}
+
+// TestEnvironment_OrgWebURLForSlug covers issue #20's organization link: the
+// same live evidence that unlocked a standalone project's overview link also
+// covers a standalone *organization's* pipelines page, and both a
+// name-addressed and an ID-addressed organization slug are checked here for
+// exactly that reason.
+func TestEnvironment_OrgWebURLForSlug(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		slug string
+		want string
+	}{
+		{
+			name: "a name-addressed organization",
+			slug: "gh/CircleCI-Labs",
+			want: "https://app.circleci.com/pipelines/gh/CircleCI-Labs",
+		},
+		{
+			name: "a long vcs spelling is canonicalised",
+			slug: "github/CircleCI-Labs",
+			want: "https://app.circleci.com/pipelines/gh/CircleCI-Labs",
+		},
+		{
+			name: "bitbucket",
+			slug: "bb/acme",
+			want: "https://app.circleci.com/pipelines/bb/acme",
+		},
+		{
+			// The standalone-organization half of issue #20's evidence:
+			// /pipelines/circleci/LmhyFJ56pbaEFz4NsPonHD answered 200 live.
+			name: "a standalone organization, addressed by its own id",
+			slug: "circleci/LmhyFJ56pbaEFz4NsPonHD",
+			want: "https://app.circleci.com/pipelines/circleci/LmhyFJ56pbaEFz4NsPonHD",
+		},
+		{
+			name: "a gitlab oauth organization is still unlinked",
+			slug: "gl/acme",
+		},
+		{
+			name: "a server installation keeps its own hostname",
+			host: "https://circleci.example.com", slug: "gh/acme",
+			want: "https://circleci.example.com/pipelines/gh/acme",
+		},
+		{
+			// A three-segment *project* slug is not an organization slug, and
+			// silently using its first two segments would build a URL for an
+			// organization nobody named -- the same refusal ContextWebURL
+			// already applies for its own organization-scoped route.
+			name: "a project slug is refused rather than truncated",
+			slug: "gh/acme/web",
+		},
+		{name: "no organization segment", slug: "gh/"},
+		{name: "empty"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clearCircleEnv(t)
+			if tc.host != "" {
+				t.Setenv("CIRCLE_HOST", tc.host)
+			}
+			env := host.LoadEnvironment()
+			assert.Equal(t, env.OrgWebURLForSlug(tc.slug), tc.want)
 		})
 	}
 }

@@ -215,18 +215,70 @@ func (e Environment) OrgSlug() string {
 // builds or accepts passes through CanonicalVCSSegment first -- "github" and
 // "GitHub" both arrive here as "gh".
 //
-// Deliberately absent: "gl", and "circleci" (the VCS type of GitLab and GitHub
-// App projects). Those projects' slugs are `circleci/<org-id>/<project-id>`
-// with opaque IDs rather than names, and CircleCI's support documentation
-// describes their app URLs as `app.circleci.com/pipelines/circleci/...`. That
-// form was *not* verified against a live standalone project by issue #182 --
-// every unauthenticated attempt renders the SPA's "Page Not Found" whether the
-// project exists or not -- so no link is offered for them and callers render
-// plain text instead. See issue #197 to close the gap; a link that
-// 404s is worse than no link.
+// Deliberately absent: "gl". A GitLab OAuth project is name-addressed like
+// "gh"/"bb" as far as this host knows, but that specific route was never
+// checked against a live one, and issue #20 did not change that -- its
+// verification (see overviewRouteVCS) covered only "circleci"-addressed
+// organizations and projects, not GitLab's.
+//
+// "circleci" -- the VCS type of GitLab and GitHub App *standalone* projects,
+// whose slugs are `circleci/<org-id>/<project-id>` with opaque IDs rather than
+// names -- is also absent from this map, and stays absent even after issue
+// #20 verified two of the four routes this package builds for it. That
+// verification lives in overviewRouteVCS instead of here on purpose: folding
+// "circleci" into this shared map would silently have extended it to
+// ProjectSettingsWebURLForSlug and PipelineWebURL too, and neither of those
+// routes' shape was checked against a live standalone project. See
+// overviewRouteVCS for what was checked and what still is not.
 var nameAddressedVCSSegments = map[string]bool{
 	"gh": true,
 	"bb": true,
+}
+
+// overviewRouteVCS reports whether vcs's project-overview page
+// (ProjectWebURLForSlug) and organization-pipelines page (OrgWebURLForSlug)
+// can be addressed by this host -- the two routes issue #20 verified live.
+//
+// ## The evidence (verified live against app.circleci.com, 2026-08-07, unauthenticated)
+//
+//	/pipelines/github/CircleCI-Labs                     -> 200  organization
+//	/pipelines/github                                   -> 404  (route is depth-sensitive)
+//	/pipelines/github/CircleCI-Labs/extra/segments/here -> 404
+//	/projects/github/CircleCI-Labs/circleci-editor      -> 200  project overview
+//	/projects/github/CircleCI-Labs                      -> 404  (depth-sensitive)
+//	/projects/github/CircleCI-Labs/circleci-editor/x    -> 404
+//	/projects/circleci/LmhyFJ56pbaEFz4NsPonHD/aproject  -> 200  STANDALONE project, same 3-segment shape
+//	/projects/circleci/LmhyFJ56pbaEFz4NsPonHD           -> 404
+//	/pipelines/circleci/LmhyFJ56pbaEFz4NsPonHD          -> 200  standalone organization
+//	/not-a-route/github/CircleCI-Labs                   -> 404  control
+//
+// ## What this does and does not establish
+//
+// app.circleci.com is a SPA, and it answers 200 for *any* path shaped like a
+// route it recognises without validating the VCS segment at all --
+// `/pipelines/notavcs/CircleCI-Labs` also answers 200 -- so this table proves
+// **route shape, not existence**: that the routes are real, that they are
+// depth-sensitive (too few or too many segments 404s), and that a standalone
+// organization/project's opaque-ID slug fits the identical shape gh/bb already
+// use. It does not, and cannot, prove that any particular organization or
+// project exists or that its page renders real content -- the same limitation
+// every other verification of these SPA routes in this package already lives
+// with, and the reason this host never uses either route as an existence
+// probe (fetchProjectContext asks the v2 API for that instead).
+//
+// ## Why only these two routes, and not the whole of nameAddressedVCSSegments
+//
+// `/settings/project/circleci/<org-id>/<project-id>`
+// (ProjectSettingsWebURLForSlug) and
+// `/pipelines/circleci/<org-id>/<project-id>/<number>` (PipelineWebURL) were
+// not probed here, and adding "circleci" to nameAddressedVCSSegments itself
+// would have unlocked both of them as an accidental side effect of fixing
+// two unrelated ones. Each caller willing to build a `circleci/...` URL says
+// so explicitly, at the point it does -- ContextWebURL already made this
+// exact choice, for its own (organization-settings) route, before this issue
+// existed.
+func overviewRouteVCS(vcs string) bool {
+	return nameAddressedVCSSegments[vcs] || vcs == "circleci"
 }
 
 // WebAppBaseURL returns the base URL of the CircleCI web UI corresponding to
@@ -280,10 +332,10 @@ func (e Environment) WebAppBaseURL() string {
 // TestEnvironment_ProjectWebURL is worth keeping runnable. A caller that has a
 // resolved identity must pass its slug to ProjectWebURLForSlug instead.
 //
-// Empty when the project slug is incomplete or its VCS type is not
-// name-addressed (see nameAddressedVCSSegments): a caller must render the
-// project's identity as plain text in that case rather than as a link that
-// cannot work.
+// Empty when the project slug is incomplete or its VCS type is one this host
+// still cannot build a project-overview URL for (see overviewRouteVCS): a
+// caller must render the project's identity as plain text in that case rather
+// than as a link that cannot work.
 func (e Environment) ProjectWebURL() string {
 	return e.ProjectWebURLForSlug(e.ProjectSlug())
 }
@@ -344,6 +396,20 @@ func (e Environment) ProjectWebURL() string {
 // this route. Handing over a link is still observation; only writing through
 // it would cross that boundary, and this host has no write path to project
 // settings at all.
+//
+// ## Standalone (GitLab / GitHub App) projects, since issue #20
+//
+// A standalone project's canonical slug is `circleci/<org-id>/<project-id>` --
+// opaque IDs, not names -- and until issue #20 that VCS segment was refused
+// outright (see nameAddressedVCSSegments' own history). The refusal was never
+// about this route's *shape*: a standalone project fits the identical
+// three-segment `/projects/<vcs>/<org>/<repo>` pattern gh/bb already use, with
+// the IDs simply standing in for names CircleCI does not have. It was that no
+// one had checked a live standalone project against it. Issue #20 did --
+// `/projects/circleci/<org-id>/<project-id>` answers 200 for a real one, the
+// same route depth-sensitivity as every other case here -- so the guard below
+// now accepts it. See overviewRouteVCS for the full evidence and for why that
+// acceptance lives in its own predicate rather than in nameAddressedVCSSegments.
 func (e Environment) ProjectWebURLForSlug(slug string) string {
 	base := e.WebAppBaseURL()
 	if base == "" || slug == "" {
@@ -355,7 +421,7 @@ func (e Environment) ProjectWebURLForSlug(slug string) string {
 		return ""
 	}
 	vcs := CanonicalVCSSegment(segments[0])
-	if !nameAddressedVCSSegments[vcs] || segments[1] == "" || segments[2] == "" {
+	if !overviewRouteVCS(vcs) || segments[1] == "" || segments[2] == "" {
 		return ""
 	}
 
@@ -364,6 +430,46 @@ func (e Environment) ProjectWebURLForSlug(slug string) string {
 		vcs,
 		url.PathEscape(segments[1]),
 		url.PathEscape(segments[2]),
+	)
+}
+
+// OrgWebURLForSlug returns the CircleCI web UI URL for the *pipelines* page of
+// an organization named by an explicit "<vcs>/<org>" slug -- normally
+// CircleCI's own canonical one, straight off the project record's
+// OrganizationSlug, in preference to anything this host inferred.
+//
+// This is issue #20's first item: the top bar showed "<organization>/<project>"
+// with the whole label linking to the project, and no organization-level URL
+// had ever been verified to link the organization half separately. See
+// overviewRouteVCS for the live evidence (`/pipelines/<vcs>/<org>`, checked for
+// both a name-addressed and a standalone organization) and for the honest
+// limitation it carries: the evidence establishes this route's *shape*, not
+// that any particular organization exists or renders real content.
+//
+// Same emptiness contract as ProjectWebURLForSlug, for the same reason: empty
+// when the slug is not exactly two segments, either segment is empty, or its
+// VCS type is not one overviewRouteVCS accepts. A caller must render the
+// organization's name as plain text then, rather than as a link that cannot
+// work.
+func (e Environment) OrgWebURLForSlug(slug string) string {
+	base := e.WebAppBaseURL()
+	if base == "" || slug == "" {
+		return ""
+	}
+
+	segments := strings.Split(slug, "/")
+	if len(segments) != 2 {
+		return ""
+	}
+	vcs := CanonicalVCSSegment(segments[0])
+	if !overviewRouteVCS(vcs) || segments[1] == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("%s/pipelines/%s/%s",
+		base,
+		vcs,
+		url.PathEscape(segments[1]),
 	)
 }
 
