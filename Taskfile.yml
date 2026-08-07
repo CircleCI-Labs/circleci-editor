@@ -159,6 +159,14 @@ tasks:
       - go run ./internal/guides/cmd/refresh-snapshot
       - go test ./internal/guides/...
 
+  config:check:
+    desc: |
+      Offline structural check of .circleci/config.yml -- no CircleCI API
+      token needed. See internal/configcheck's package doc comment (issue
+      #15) for what this can and can't catch.
+    cmds:
+      - go run ./internal/configcheck/cmd/checkconfig .circleci/config.yml
+
   tidy:
     desc: Tidy Go module dependencies
     cmds:
