@@ -139,7 +139,7 @@ tree to run the web build in, so the resulting binary has no UI to serve at
 all. Rather than start anyway and show a placeholder page that looks like a
 broken app, that binary exits immediately with an error explaining why and
 pointing back here. Tracked in
-[issue #25](https://github.com/CircleCI-Labs/circleci-editor/issues/25).
+[issue #37](https://github.com/CircleCI-Labs/circleci-editor/issues/37).
 
 ### Running the browser E2E suite (`pnpm --dir web test:e2e`)
 
