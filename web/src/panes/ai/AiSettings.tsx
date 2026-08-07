@@ -3,6 +3,7 @@ import { useId, useState } from 'react';
 import { Badge } from '~/design/components/Badge';
 import { Button } from '~/design/components/Button';
 import { Spinner } from '~/design/components/Spinner';
+import type { AiKeySource } from '~/lib/rpc/client';
 import { useAiStore } from '~/state/aiStore';
 
 import { McpSettings } from './McpSettings';
@@ -61,6 +62,9 @@ export function AiSettings() {
             label={provider.label}
             model={provider.model}
             configured={provider.configured}
+            source={provider.source}
+            envVar={provider.envVar}
+            storedKeyShadowed={provider.storedKeyShadowed}
             saving={savingKey}
             onSave={(key) => saveKey(provider.id, key)}
             onRemove={() => removeKey(provider.id)}
@@ -83,6 +87,12 @@ interface ProviderRowProps {
   label: string;
   model: string;
   configured: boolean;
+  /** See `AiKeySource` -- where the key in effect, if any, actually comes from. */
+  source: AiKeySource;
+  /** The environment variable checked for this provider, always populated (see `keystore.KeyEnvVar`). */
+  envVar: string;
+  /** True when a stored key exists but `source` is `'environment'` -- Remove is real here, but it will not change the effective key. */
+  storedKeyShadowed: boolean;
   saving: boolean;
   onSave: (key: string) => Promise<boolean>;
   onRemove: () => void;
@@ -93,6 +103,9 @@ function ProviderRow({
   label,
   model,
   configured,
+  source,
+  envVar,
+  storedKeyShadowed,
   saving,
   onSave,
   onRemove,
@@ -105,6 +118,16 @@ function ProviderRow({
     const ok = await onSave(draft.trim());
     if (ok) setDraft('');
   };
+
+  // Whether Remove would delete anything at all. Source 'store' always has
+  // something to delete; source 'environment' only does when
+  // storedKeyShadowed says a stored key exists underneath it. The remaining
+  // case -- 'environment' with nothing stored -- is issue #7 itself: before
+  // this, every configured row got a Remove button regardless, and clicking
+  // it there deleted nothing while reporting success. There is no honest
+  // disabled label for "this button would do nothing", so the fix is to not
+  // render the button at all in that case, and say why instead (below).
+  const canRemoveStoredKey = source === 'store' || storedKeyShadowed;
 
   return (
     <div
@@ -122,15 +145,31 @@ function ProviderRow({
       </div>
 
       {configured ? (
-        <div className="mt-2">
-          <Button
-            variant="danger"
-            size="sm"
-            disabled={saving}
-            onClick={onRemove}
-          >
-            Remove key
-          </Button>
+        <div className="mt-2 flex flex-col gap-1.5">
+          {source === 'environment' ? (
+            <p
+              className="text-2xs text-cc-text-muted"
+              data-testid={`ai-provider-${id}-env-note`}
+            >
+              Configured from the environment variable{' '}
+              <span className="font-mono text-cc-text">{envVar}</span>.{' '}
+              {storedKeyShadowed
+                ? 'A stored key also exists but is ignored while it is set -- removing it will not change which key is used.'
+                : `Nothing is stored; unset ${envVar} to store a key here instead.`}
+            </p>
+          ) : null}
+          {canRemoveStoredKey ? (
+            <div>
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={saving}
+                onClick={onRemove}
+              >
+                {source === 'environment' ? 'Remove stored key' : 'Remove key'}
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="mt-2 flex items-end gap-2">

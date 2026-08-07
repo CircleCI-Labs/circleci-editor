@@ -1119,6 +1119,16 @@ export function getUsage(opts?: {
 // AI pane (issue #92)
 // ---------------------------------------------------------------------------
 
+/**
+ * Where the key a provider is using right now actually comes from -- see the
+ * host's `keystore.KeySource` (issue #7). `'environment'` and `'store'` both
+ * mean `configured: true`; the distinction is *why*, which is exactly what
+ * `configured` alone could not say, and the reason a Remove click could
+ * report success while changing nothing (a stored key that was never there
+ * to begin with, because an environment variable was the real source).
+ */
+export type AiKeySource = 'environment' | 'store' | 'none';
+
 /** One provider's status, as reported by `GET /api/ai/status`. Never carries a key -- see the host's own `aiProviderStatusPayload` doc comment. */
 export interface AiProviderStatus {
   id: string;
@@ -1126,6 +1136,18 @@ export interface AiProviderStatus {
   configured: boolean;
   /** The model this provider will use if invoked right now. Never hardcode a model name in a component -- always read it from here. */
   model: string;
+  /** See `AiKeySource`. */
+  source: AiKeySource;
+  /** The environment variable checked for this provider, populated whether or not it is actually set (see `keystore.KeyEnvVar`) -- not a secret, so always safe to show. */
+  envVar: string;
+  /**
+   * True exactly when a key is genuinely stored but `source` is
+   * `'environment'`: the environment variable is overriding it. This is the
+   * one state where "Remove" still does something real (there is a stored
+   * key to delete) but must not be presented as "the key is now gone" --
+   * `envVar` will still supply one afterwards. See issue #7.
+   */
+  storedKeyShadowed: boolean;
 }
 
 /** Where the host persists provider keys, surfaced so the UI can always answer "where is my key, and how do I remove it". */
@@ -1144,11 +1166,25 @@ export function getAiStatus(): Promise<AiStatusResponse> {
   return request<AiStatusResponse>('/api/ai/status');
 }
 
-/** The JSON shape returned by both `PUT` and `DELETE /api/ai/key`. Never contains the key itself. */
+/**
+ * The JSON shape returned by both `PUT` and `DELETE /api/ai/key`. Never
+ * contains the key itself.
+ *
+ * Carries the same `source`/`envVar`/`storedKeyShadowed` triple as
+ * `AiProviderStatus`, and for the same reason (issue #7): a `DELETE` used to
+ * hardcode `configured: false` regardless of whether an environment variable
+ * was still supplying a key, so the pane's Remove button could report
+ * success while nothing about the *effective* key had changed. Reading these
+ * back from the response lets the caller update its state honestly without
+ * a second round trip to `GET /api/ai/status`.
+ */
 export interface AiKeyResponse {
   provider: string;
   configured: boolean;
   storage: AiKeyStorage;
+  source: AiKeySource;
+  envVar: string;
+  storedKeyShadowed: boolean;
 }
 
 /** Stores `key` for `provider` via the host (which persists it in the OS keychain or a 0600 file -- see `AiKeyStorage`). The key is sent once, over this one request, and never appears in the response. */

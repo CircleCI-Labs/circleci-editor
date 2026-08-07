@@ -203,7 +203,15 @@ describe('PolicyRulesView', () => {
       useAiStore.setState({
         statusState: 'ready',
         providers: [
-          { id: 'anthropic', label: 'Anthropic', configured: true, model: 'm' },
+          {
+            id: 'anthropic',
+            label: 'Anthropic',
+            configured: true,
+            model: 'm',
+            source: 'store',
+            envVar: 'VCE_AI_KEY_ANTHROPIC',
+            storedKeyShadowed: false,
+          },
         ],
         selectedProvider: 'anthropic',
       });
