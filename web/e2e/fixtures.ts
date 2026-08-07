@@ -244,14 +244,14 @@ const AI_STORAGE_STUB = {
  * name, so the AI status/key stubs below can report it exactly as the real
  * host does.
  */
-const AI_ENV_VAR_STUB = 'VCE_AI_KEY_ANTHROPIC';
+const AI_ENV_VAR_STUB = 'CIRCLECI_EDITOR_AI_KEY_ANTHROPIC';
 
 /**
  * The `source`/`envVar`/`storedKeyShadowed` triple every real
  * `GET /api/ai/status` and `PUT`/`DELETE /api/ai/key` response carries
  * (issue #7: the pane needs to distinguish an environment-supplied key from
  * a stored one to decide whether Remove would do anything). None of these
- * specs simulate `VCE_AI_KEY_ANTHROPIC` being set, so the stubbed provider is
+ * specs simulate `CIRCLECI_EDITOR_AI_KEY_ANTHROPIC` being set, so the stubbed provider is
  * always either genuinely stored or genuinely absent -- never shadowed.
  */
 function aiKeySourceStub(configured: boolean) {

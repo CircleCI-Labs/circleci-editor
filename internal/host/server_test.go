@@ -115,12 +115,12 @@ func waitForServer(t *testing.T, url string) {
 
 // TestServer_WillServePlaceholder_DevProxyAlwaysFalse guards issue #25's
 // loud-failure path against the one case it must never trigger for: local
-// development. VCE_DEV_PROXY means Run reverse-proxies to a live Vite dev
+// development. CIRCLECI_EDITOR_DEV_PROXY means Run reverse-proxies to a live Vite dev
 // server instead of reading the embed at all (see newRootHandler), so
 // whether a real build happens to be embedded is irrelevant and must not
 // make `task dev` start refusing to run.
 func TestServer_WillServePlaceholder_DevProxyAlwaysFalse(t *testing.T) {
-	t.Setenv("VCE_DEV_PROXY", "http://127.0.0.1:5173")
+	t.Setenv("CIRCLECI_EDITOR_DEV_PROXY", "http://127.0.0.1:5173")
 
 	srv, err := host.New(host.Options{WorkDir: t.TempDir()})
 	assert.NilError(t, err)
@@ -134,10 +134,10 @@ func TestServer_WillServePlaceholder_DevProxyAlwaysFalse(t *testing.T) {
 // binary happens to have a real web build embedded (task build ran first)
 // or just the committed .gitkeep is a fact about the build environment, not
 // something a unit test should assume either way. What must always hold is
-// that, absent VCE_DEV_PROXY, WillServePlaceholder is exactly the negation
+// that, absent CIRCLECI_EDITOR_DEV_PROXY, WillServePlaceholder is exactly the negation
 // of webassets.HasRealBuild -- see that method's doc comment.
 func TestServer_WillServePlaceholder_MatchesHasRealBuildWithoutDevProxy(t *testing.T) {
-	assert.Equal(t, os.Getenv("VCE_DEV_PROXY"), "", "test requires VCE_DEV_PROXY to be unset to exercise the embed-driven branch")
+	assert.Equal(t, os.Getenv("CIRCLECI_EDITOR_DEV_PROXY"), "", "test requires CIRCLECI_EDITOR_DEV_PROXY to be unset to exercise the embed-driven branch")
 
 	srv, err := host.New(host.Options{WorkDir: t.TempDir()})
 	assert.NilError(t, err)

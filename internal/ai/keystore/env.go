@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/CircleCI-Labs/circleci-editor/internal/ai/secret"
+	"github.com/CircleCI-Labs/circleci-editor/internal/envcompat"
 )
 
 // KeyEnvVarPrefix begins the name of every environment variable that can
@@ -37,12 +38,16 @@ import (
 // program is not consent to spend it here, and "why is the editor using a key
 // I never gave it" is exactly the kind of surprise this project's
 // bring-your-own-key design exists to avoid.
-const KeyEnvVarPrefix = "VCE_AI_KEY_"
+const KeyEnvVarPrefix = "CIRCLECI_EDITOR_AI_KEY_"
+
+// SupersededKeyEnvVarPrefix is the pre-rename spelling, still honoured with a
+// deprecation warning -- see internal/envcompat.
+const SupersededKeyEnvVarPrefix = "VCE_AI_KEY_"
 
 // KeyEnvVar returns the environment variable that overrides the stored value
 // for entry: the entry id upper-cased with every character that isn't ASCII
 // alphanumeric replaced by an underscore, prefixed by KeyEnvVarPrefix. So the
-// "anthropic" provider key is VCE_AI_KEY_ANTHROPIC.
+// "anthropic" provider key is CIRCLECI_EDITOR_AI_KEY_ANTHROPIC.
 //
 // The rule is mechanical rather than a lookup table so a provider added later
 // needs no change here, and so the name a user must type is derivable from the
@@ -65,7 +70,30 @@ func KeyEnvVar(entry string) string {
 // which is all any status or provenance path needs -- cannot accidentally
 // carry the value with it.
 func envKeyIsSet(entry string) bool {
-	return strings.TrimSpace(os.Getenv(KeyEnvVar(entry))) != ""
+	return strings.TrimSpace(envValue(entry)) != ""
+}
+
+// envValue reads entry's key from the current variable name, falling back to
+// the superseded VCE_ spelling with a one-time deprecation warning. Both the
+// presence check and the read go through here so they can never disagree about
+// whether a key is set -- the precedence rule this package exists to own.
+func envValue(entry string) string {
+	return envcompat.Value(KeyEnvVar(entry), supersededKeyEnvVar(entry))
+}
+
+// effectiveKeyEnvVar names the variable that is actually supplying entry's key,
+// falling back to the current spelling when neither is set -- so a status line
+// can say where a key really came from instead of where it should have.
+func effectiveKeyEnvVar(entry string) string {
+	if os.Getenv(KeyEnvVar(entry)) == "" && os.Getenv(supersededKeyEnvVar(entry)) != "" {
+		return supersededKeyEnvVar(entry)
+	}
+	return KeyEnvVar(entry)
+}
+
+// supersededKeyEnvVar is KeyEnvVar's pre-rename spelling for the same entry.
+func supersededKeyEnvVar(entry string) string {
+	return SupersededKeyEnvVarPrefix + strings.TrimPrefix(KeyEnvVar(entry), KeyEnvVarPrefix)
 }
 
 // envKey reads entry's value from the environment, wrapped in secret.String
@@ -74,7 +102,7 @@ func envKeyIsSet(entry string) bool {
 // loop routinely leaves a trailing newline, and no provider key has meaningful
 // leading or trailing space.
 func envKey(entry string) (secret.String, bool) {
-	value := strings.TrimSpace(os.Getenv(KeyEnvVar(entry)))
+	value := strings.TrimSpace(envValue(entry))
 	if value == "" {
 		return secret.String{}, false
 	}
@@ -160,8 +188,15 @@ const (
 type Lookup struct {
 	// Source is the provenance of the key that would be used right now.
 	Source KeySource
-	// EnvVar is the environment variable checked for this entry (always
-	// populated, whether or not it is set) so a message can name it.
+	// EnvVar is the environment variable a message should name for this
+	// entry. Always populated, whether or not anything is set.
+	//
+	// When a key is actually being supplied by the superseded VCE_ spelling,
+	// this is that spelling rather than the current one -- naming a variable
+	// the user has not set, while a different one is doing the work, is the
+	// kind of confidently wrong report this package exists to avoid. With
+	// nothing set it is the current name, which is the one worth telling
+	// someone to use.
 	EnvVar string
 	// EnvSet reports whether EnvVar is set to a non-empty value.
 	EnvSet bool
@@ -186,7 +221,7 @@ type Lookup struct {
 func LookupKey(ctx context.Context, store Store, entry string) Lookup {
 	result := Lookup{
 		Source: SourceNone,
-		EnvVar: KeyEnvVar(entry),
+		EnvVar: effectiveKeyEnvVar(entry),
 		EnvSet: envKeyIsSet(entry),
 	}
 

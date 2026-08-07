@@ -271,7 +271,7 @@ func TestRun_RefusesToStartWithoutARealWebBuild(t *testing.T) {
 
 // TestDebugEnabled is issue #216's flag-versus-environment resolution, as a
 // table so every case is visible beside the others -- above all the two that
-// are easy to get backwards: an exported-but-empty VCE_DEBUG is *off*, and
+// are easy to get backwards: an exported-but-empty CIRCLECI_EDITOR_DEBUG is *off*, and
 // there is no spelling of "off" that overrides the flag, because off is
 // already the default.
 func TestDebugEnabled(t *testing.T) {
@@ -291,7 +291,7 @@ func TestDebugEnabled(t *testing.T) {
 			want:    true,
 		},
 		{
-			name: "VCE_DEBUG turns it on without the flag, for when the CLI eats --debug",
+			name: "CIRCLECI_EDITOR_DEBUG turns it on without the flag, for when the CLI eats --debug",
 			env:  map[string]string{debugEnvVar: "1"},
 			want: true,
 		},
@@ -301,12 +301,12 @@ func TestDebugEnabled(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "VCE_DEBUG=0 is a value, so it is on -- deliberately not parsed as a boolean",
+			name: "CIRCLECI_EDITOR_DEBUG=0 is a value, so it is on -- deliberately not parsed as a boolean",
 			env:  map[string]string{debugEnvVar: "0"},
 			want: true,
 		},
 		{
-			name: "exported but empty is off: that is what `export VCE_DEBUG=` leaves behind",
+			name: "exported but empty is off: that is what `export CIRCLECI_EDITOR_DEBUG=` leaves behind",
 			env:  map[string]string{debugEnvVar: ""},
 			want: false,
 		},
@@ -318,7 +318,7 @@ func TestDebugEnabled(t *testing.T) {
 		},
 		{
 			name: "an unrelated variable does not turn it on",
-			env:  map[string]string{"VCE_DEV_PROXY": "http://localhost:5173"},
+			env:  map[string]string{"CIRCLECI_EDITOR_DEV_PROXY": "http://localhost:5173"},
 			want: false,
 		},
 	}
@@ -430,4 +430,25 @@ func TestPrintBanner_KeepsEveryLoadBearingLine(t *testing.T) {
 				"issue #67's wording is load bearing at every verbosity")
 		})
 	}
+}
+
+// TestDebugEnabled_SupersededSpelling pins that the pre-rename variable still
+// turns debug logging on. debugEnabled takes an injected getenv precisely so
+// this can be asserted without touching the process environment.
+func TestDebugEnabled_SupersededSpelling(t *testing.T) {
+	env := func(name string) string {
+		if name == supersededDebugEnvVar {
+			return "1"
+		}
+		return ""
+	}
+	assert.Assert(t, debugEnabled(false, env), "the superseded spelling must still enable debug")
+}
+
+// TestDebugEnabled_SupersededEmptyIsStillOff carries the "exported but empty is
+// off" rule across to the old spelling too, so a migration cannot change what
+// `export VCE_DEBUG=` means.
+func TestDebugEnabled_SupersededEmptyIsStillOff(t *testing.T) {
+	env := func(string) string { return "" }
+	assert.Assert(t, !debugEnabled(false, env))
 }

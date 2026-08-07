@@ -228,7 +228,7 @@ func (s *Server) handleAIKeyPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read back through LookupKey rather than assuming Configured=true: if
-	// VCE_AI_KEY_<PROVIDER> is already set, the key that was just stored is
+	// CIRCLECI_EDITOR_AI_KEY_<PROVIDER> is already set, the key that was just stored is
 	// shadowed from the moment it lands, and the response must say so
 	// instead of implying it is now the key in effect (see aiKeyResponse's
 	// doc comment).
@@ -936,7 +936,7 @@ func aiStoreFromEnv(logf func(string, ...any)) keystore.Store {
 	if err != nil {
 		logf("ai: failed to open key store, AI pane will report every provider as unconfigured: %v", err)
 		// Still wrapped for the environment override (which keystore.Open
-		// would have applied): a key supplied through VCE_AI_KEY_<PROVIDER>
+		// would have applied): a key supplied through CIRCLECI_EDITOR_AI_KEY_<PROVIDER>
 		// needs no store at all, so an unusable store must not turn a
 		// perfectly good environment-supplied key into "unconfigured" -- and
 		// must not make the pane disagree with what `ai status` reports.

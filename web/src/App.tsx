@@ -28,8 +28,8 @@ import { DocsPane } from '~/panes/docs/DocsPane';
 import { YamlPane } from '~/panes/yaml/YamlPane';
 import { useAppStore } from '~/state/appStore';
 
-const APP_NAME = 'CircleCI Visual Config Editor';
-const APP_NAME_SHORT = 'Config Editor';
+const APP_NAME = 'CircleCI Editor';
+const APP_NAME_SHORT = 'Editor';
 
 /**
  * How much of an absolute config path to show at a given tier. Issue #154:

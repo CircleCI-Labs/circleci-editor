@@ -5,7 +5,7 @@ import { defineConfig, devices } from '@playwright/test';
  * `reuseExistingServer`, so a run started while *another* checkout of this
  * repo already had a preview server on 4173 silently tested *that* checkout's
  * bundle -- and the failure mode there is a *pass*, which is the dangerous
- * direction. An env-var override (`VCE_E2E_PORT`) alone does not fix that: it
+ * direction. An env-var override (`CIRCLECI_EDITOR_E2E_PORT`) alone does not fix that: it
  * only helps whoever remembers to set it, and the default -- what every plain
  * `pnpm test:e2e` and every worktree that doesn't opt in actually runs -- was
  * left exactly as broken as before.
@@ -17,7 +17,7 @@ import { defineConfig, devices } from '@playwright/test';
  * below is unconditionally off, so the second run's `--strictPort` fails to
  * bind and the run errors out loudly instead of quietly attaching to the
  * first run's server -- collision becomes a startup failure, never a mistaken
- * pass. `VCE_E2E_PORT` still overrides the ephemeral choice, for anyone who
+ * pass. `CIRCLECI_EDITOR_E2E_PORT` still overrides the ephemeral choice, for anyone who
  * wants a fixed, memorable port to point a manual browser tab at while
  * debugging a spec.
  */
@@ -28,7 +28,7 @@ function ephemeralPort(): number {
   // rare" -- collision is handled safely either way (see above).
   return 4173 + (process.pid % 500);
 }
-const PORT = Number(process.env.VCE_E2E_PORT ?? ephemeralPort());
+const PORT = Number(process.env.CIRCLECI_EDITOR_E2E_PORT ?? ephemeralPort());
 /**
  * Playwright re-imports this file fresh in every worker process it spawns --
  * under `fullyParallel` that can mean one OS process per test, each with its
@@ -39,12 +39,12 @@ const PORT = Number(process.env.VCE_E2E_PORT ?? ephemeralPort());
  * repeated-run check in this PR before it shipped). Writing the resolved
  * value back into `process.env` here means every worker process, which
  * inherits its environment from the process that spawned it, sees
- * `VCE_E2E_PORT` already set and reuses this exact value instead of deriving
+ * `CIRCLECI_EDITOR_E2E_PORT` already set and reuses this exact value instead of deriving
  * its own -- so the whole run, however many processes it ends up as, agrees
  * on one port.
  */
-if (process.env.VCE_E2E_PORT === undefined) {
-  process.env.VCE_E2E_PORT = String(PORT);
+if (process.env.CIRCLECI_EDITOR_E2E_PORT === undefined) {
+  process.env.CIRCLECI_EDITOR_E2E_PORT = String(PORT);
 }
 const baseURL = `http://localhost:${PORT}`;
 

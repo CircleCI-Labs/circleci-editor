@@ -1,4 +1,4 @@
-# CircleCI Visual Config Editor
+# CircleCI Editor
 
 A visual, drag-and-drop editor for your `.circleci/config.yml`.
 
@@ -188,7 +188,7 @@ When installed on `PATH`, the CircleCI CLI also runs it as
 | `--no-browser`   |           | Don't automatically open a browser window. Also means the editor never stops on its own, since nothing may ever connect to it. |
 | `--app`          |           | Open in a chromeless, app-style browser window instead of a normal tab. |
 | `--keep-alive`   |           | Keep running after you close the editor window. Without it, the editor stops about 6s after the last window closes. Implied by `--no-browser`. |
-| `--debug`        |           | Print progress and cache diagnostics. Also settable as `VCE_DEBUG`. |
+| `--debug`        |           | Print progress and cache diagnostics. Also settable as `CIRCLECI_EDITOR_DEBUG`. |
 | `--version`      | `-v`      | Print the version, commit, and build date.                          |
 | `--help`         | `-h`      | Print usage.                                                        |
 
@@ -204,9 +204,16 @@ you'd expect.
 | `CIRCLE_HOST`      | CircleCI API host. Defaults to `https://circleci.com`; set this to point at a self-hosted CircleCI server installation. |
 | `XDG_CACHE_HOME`   | Overrides where the orb registry cache is stored. Defaults to `~/.cache` on every platform, including macOS. |
 | `XDG_CONFIG_HOME`  | Overrides where the AI provider key file lives when the file fallback is in use (see below). Defaults to `~/.config` on every platform, including macOS. |
-| `VCE_AI_KEY_<PROVIDER>` | Supplies an AI provider key without storing one, e.g. `VCE_AI_KEY_ANTHROPIC`. Takes precedence over any stored key. Nothing is written to disk. |
-| `VCE_AI_KEYSTORE_BACKEND` | `keychain` or `file`. Overrides automatic backend detection for the stored key. |
-| `VCE_DEBUG`        | Set to any value to enable debug logging, exactly like `--debug`. |
+| `CIRCLECI_EDITOR_AI_KEY_<PROVIDER>` | Supplies an AI provider key without storing one, e.g. `CIRCLECI_EDITOR_AI_KEY_ANTHROPIC`. Takes precedence over any stored key. Nothing is written to disk. |
+| `CIRCLECI_EDITOR_AI_KEYSTORE_BACKEND` | `keychain` or `file`. Overrides automatic backend detection for the stored key. |
+| `CIRCLECI_EDITOR_DEBUG`        | Set to any value to enable debug logging, exactly like `--debug`. |
+
+> **Renamed in 1.2.0.** These three were previously prefixed `VCE_`
+> (`VCE_AI_KEY_<PROVIDER>`, `VCE_AI_KEYSTORE_BACKEND`, `VCE_DEBUG`) — an
+> initialism for "visual config editor", a name this project no longer uses.
+> The old spellings still work and will keep working for now; using one prints a
+> deprecation warning naming its replacement. They will be removed in a future
+> major version.
 
 `CIRCLE_PROJECT_ID`, `CIRCLE_VCS_TYPE`, `CIRCLE_PROJECT_USERNAME`,
 `CIRCLE_PROJECT_REPONAME`, `CIRCLE_BRANCH`, and `CIRCLE_DEFAULT_BRANCH` are
@@ -250,7 +257,7 @@ The key is stored in your OS keychain where one is available (macOS
 Keychain, or the Linux Secret Service via `secret-tool`); otherwise it
 falls back to a `0600` file under `$XDG_CONFIG_HOME/circleci-editor/`,
 which is also where Windows stores it today. `ai status` always says which
-one is in effect, and `VCE_AI_KEY_<PROVIDER>` in the environment overrides
+one is in effect, and `CIRCLECI_EDITOR_AI_KEY_<PROVIDER>` in the environment overrides
 both without ever touching disk.
 
 ### The orb cache

@@ -261,7 +261,7 @@ func TestAISetKey_Fn_WarnsWhenAnEnvironmentVariableWins(t *testing.T) {
 	t.Setenv(keystore.KeyEnvVar("anthropic"), "not-a-real-key-from-the-environment")
 
 	assert.NilError(t, h.run(t, "set-key", "anthropic"))
-	assert.Assert(t, is.Contains(h.stdout.String(), "VCE_AI_KEY_ANTHROPIC is set in this environment and takes precedence"))
+	assert.Assert(t, is.Contains(h.stdout.String(), "CIRCLECI_EDITOR_AI_KEY_ANTHROPIC is set in this environment and takes precedence"))
 }
 
 func TestAISetKey_Fn_RejectsAnUnknownProvider(t *testing.T) {
@@ -325,7 +325,7 @@ func TestAIStatus_Fn_ExplainsWhichKeyIsInEffect(t *testing.T) {
 
 	assert.NilError(t, h.run(t, "status", "anthropic"))
 	out := h.stdout.String()
-	assert.Assert(t, is.Contains(out, "from the environment variable VCE_AI_KEY_ANTHROPIC"))
+	assert.Assert(t, is.Contains(out, "from the environment variable CIRCLECI_EDITOR_AI_KEY_ANTHROPIC"))
 	assert.Assert(t, is.Contains(out, "ignored"))
 	assert.Assert(t, is.Contains(out, "Precedence:"))
 	assertNoKeyInOutput(t, h.output())

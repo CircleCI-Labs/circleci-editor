@@ -38,7 +38,7 @@ import "log"
 //     names something the user can do, or a failure that would otherwise be
 //     silent. A failure nobody is told about is the bug issue #150 was filed
 //     about, so "quiet" must never become "silent about failures".
-//   - **Debug (--debug / VCE_DEBUG).** Progress and bookkeeping: cache warms,
+//   - **Debug (--debug / CIRCLECI_EDITOR_DEBUG).** Progress and bookkeeping: cache warms,
 //     refresh checks, disk-cache housekeeping, the redundant "listening on"
 //     line. Losing every one of these leaves the user with a working editor
 //     and nothing to act on.
