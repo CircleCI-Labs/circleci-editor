@@ -66,6 +66,17 @@ func newGuidesTestServer(t *testing.T, token string, cache host.Options) *httpte
 	t.Setenv("CIRCLE_TOKEN", token)
 	// Never let a test's background refresh reach the real internet.
 	t.Setenv(guides.NoRefreshEnvVar, "1")
+	// A cache directory of this test's own.
+	//
+	// TestMain already keeps the whole package out of the developer's real
+	// ~/.cache, but one directory shared by every test in the binary is not
+	// enough: the caches are persisted, so a server built by an earlier test
+	// writes files that a later one then reads. That is what made
+	// TestServer_ResourceClasses_NoToken_DerivesFromTheVendoredTables and
+	// TestServer_Guides_NoToken_ServesTheVendoredGuides pass when run alone and
+	// fail in a full package run -- an ordering dependency, which is the kind
+	// of failure that gets blamed on whatever changed last.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	opts := cache
 	opts.WorkDir = t.TempDir()
