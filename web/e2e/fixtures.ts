@@ -238,6 +238,30 @@ const AI_STORAGE_STUB = {
   location: 'macOS Keychain (service "circleci-editor")',
 };
 
+/**
+ * The environment variable the real host would check for the stubbed
+ * "anthropic" provider (see `keystore.KeyEnvVar`) -- not a secret, just the
+ * name, so the AI status/key stubs below can report it exactly as the real
+ * host does.
+ */
+const AI_ENV_VAR_STUB = 'VCE_AI_KEY_ANTHROPIC';
+
+/**
+ * The `source`/`envVar`/`storedKeyShadowed` triple every real
+ * `GET /api/ai/status` and `PUT`/`DELETE /api/ai/key` response carries
+ * (issue #7: the pane needs to distinguish an environment-supplied key from
+ * a stored one to decide whether Remove would do anything). None of these
+ * specs simulate `VCE_AI_KEY_ANTHROPIC` being set, so the stubbed provider is
+ * always either genuinely stored or genuinely absent -- never shadowed.
+ */
+function aiKeySourceStub(configured: boolean) {
+  return {
+    source: configured ? 'store' : 'none',
+    envVar: AI_ENV_VAR_STUB,
+    storedKeyShadowed: false,
+  };
+}
+
 /** One partial failure, as the host reports them (issue #150). */
 export interface ProjectContextWarningStub {
   kind:
@@ -667,6 +691,7 @@ export async function mockHostApi(
             label: 'Anthropic',
             configured: aiConfigured,
             model: 'claude-e2e-test-model',
+            ...aiKeySourceStub(aiConfigured),
           },
         ],
         storage: AI_STORAGE_STUB,
@@ -685,6 +710,7 @@ export async function mockHostApi(
           provider: body.provider,
           configured: true,
           storage: AI_STORAGE_STUB,
+          ...aiKeySourceStub(true),
         },
       });
       return;
@@ -697,6 +723,7 @@ export async function mockHostApi(
           provider: 'anthropic',
           configured: false,
           storage: AI_STORAGE_STUB,
+          ...aiKeySourceStub(false),
         },
       });
       return;
