@@ -202,15 +202,26 @@ var toolClassifications = map[string]Classification{
 	// readOnlyHint=true: the server itself does not claim this is safe to
 	// treat as a read.
 	"rerun_workflow": ClassWrite,
-	// A two-phase tool: phase one *starts* an asynchronous usage-data
-	// export job scoped to a whole billing organisation before anything
-	// can be downloaded. That is a side effect -- a job created, storage
-	// consumed, an export quota spent -- not a state read, even though it
-	// is not "destructive" in the sense cancelling or rerunning a
-	// workflow is. Server annotation: destructiveHint=false, and (like
-	// rerun_workflow) no readOnlyHint=true. Gated out of the same
-	// caution the package doc describes: something that starts a
-	// process is not a read merely because it is not destructive.
+	// Gated on the server's own annotation, and on nothing else.
+	//
+	// Every one of the ten read tools above carries readOnlyHint=true.
+	// This one does not: it has destructiveHint=false and no readOnlyHint
+	// at all (verified against https://mcp.circleci.com/v1/mcp's own
+	// tools/list, 2026-08-07). CircleCI declining to call its own tool a
+	// read is the whole justification -- this package's rule is that
+	// anything not annotated read-only is gated, and inventing a
+	// different reason to reach the same answer would just be a reason
+	// that could turn out to be wrong.
+	//
+	// It is worth being precise about what it is *not*, because an
+	// earlier version of this comment was not. It does not run a
+	// pipeline, spend build credits, or create anything visible to the
+	// organisation as a build. Its own description: a two-phase
+	// asynchronous export -- phase one returns an export_id, phase two
+	// polls until CircleCI has prepared the data and then returns
+	// pre-signed download URLs. CircleCI does that preparation in the
+	// background. So it is closer to a read than cancel_workflow or
+	// rerun_workflow are, and it is still not annotated as one.
 	"download_usage_data": ClassWrite,
 }
 
