@@ -160,7 +160,16 @@ describe('AiPane', () => {
     ).toBeDisabled();
     // The settings panel auto-opens so "how do I fix this" is answered
     // without a second click.
-    expect(screen.getByText(/AI provider keys/i)).toBeInTheDocument();
+    //
+    // Awaited rather than asserted synchronously, because the badge above and
+    // this panel are one commit apart *by construction*: the badge renders as
+    // soon as the status fetch lands in the store, and the panel opens from an
+    // effect keyed on that same state (see AiPane's own auto-open effect). So
+    // waiting for the badge does not mean the panel has rendered yet. React
+    // usually batches the two closely enough that a synchronous assertion
+    // passes, which is why this failed only on CI and only sometimes -- a
+    // timing assumption, not a broken product.
+    expect(await screen.findByText(/AI provider keys/i)).toBeInTheDocument();
   });
 
   it('enables the composer once the selected provider is configured', async () => {
