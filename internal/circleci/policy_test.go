@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"testing"
 
+	"gopkg.in/yaml.v3"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
@@ -297,6 +298,92 @@ func TestDecidePolicy_UpstreamStatusesAreClassifiable(t *testing.T) {
 			status, ok := circleci.StatusCode(err)
 			assert.Assert(t, ok)
 			assert.Equal(t, status, tc.status)
+		})
+	}
+}
+
+// TestMergePolicyInput_MatchesTheLiveShape pins the exact structure
+// confirmed live on 2026-08-07 by running `circleci policy eval` (which
+// performs this same injection for its own local evaluation) against a
+// config with a reusable executor: input._compiled_ came back with the
+// executor already inlined into the job -- resource_class on the job
+// itself, no top-level "executors" key at all.
+func TestMergePolicyInput_MatchesTheLiveShape(t *testing.T) {
+	source := "version: 2.1\n" +
+		"executors:\n" +
+		"  my-exec:\n" +
+		"    docker:\n" +
+		"      - image: cimg/base:current\n" +
+		"    resource_class: medium\n" +
+		"jobs:\n" +
+		"  build:\n" +
+		"    executor: my-exec\n"
+
+	// Copied verbatim from that live run's `input._compiled_` -- the
+	// executor's resource_class is now on the job, and "executors" is gone.
+	compiled := "version: 2\n" +
+		"jobs:\n" +
+		"  build:\n" +
+		"    docker:\n" +
+		"      - image: cimg/base:current\n" +
+		"    resource_class: medium\n"
+
+	merged, err := circleci.MergePolicyInput(source, compiled)
+	assert.NilError(t, err)
+
+	var input map[string]any
+	assert.NilError(t, yaml.Unmarshal([]byte(merged), &input))
+
+	// The source's own top-level keys survive untouched.
+	assert.Assert(t, input["executors"] != nil, "input.executors must still exist -- only _compiled_ is added")
+	assert.Equal(t, input["version"], 2.1)
+
+	compiledSection, ok := input["_compiled_"].(map[string]any)
+	assert.Assert(t, ok, "_compiled_ must be a nested document, not a compiled-YAML string")
+	assert.Assert(t, compiledSection["executors"] == nil, "the compiled form has no executors key -- it was inlined away")
+
+	jobs, ok := compiledSection["jobs"].(map[string]any)
+	assert.Assert(t, ok)
+	build, ok := jobs["build"].(map[string]any)
+	assert.Assert(t, ok)
+	assert.Equal(t, build["resource_class"], "medium")
+}
+
+func TestMergePolicyInput_OverwritesALiteralCompiledKey(t *testing.T) {
+	// CircleCI's own trigger-time input does the same single-key
+	// assignment, not a deep merge -- so a source config that (implausibly)
+	// already holds a top-level "_compiled_" key of its own is superseded,
+	// exactly as it would be for real, rather than merged with it.
+	source := "version: 2.1\n_compiled_: nonsense\n"
+	compiled := "version: 2\njobs: {}\n"
+
+	merged, err := circleci.MergePolicyInput(source, compiled)
+	assert.NilError(t, err)
+
+	var input map[string]any
+	assert.NilError(t, yaml.Unmarshal([]byte(merged), &input))
+	compiledSection, ok := input["_compiled_"].(map[string]any)
+	assert.Assert(t, ok)
+	assert.DeepEqual(t, compiledSection, map[string]any{"jobs": map[string]any{}, "version": 2})
+}
+
+func TestMergePolicyInput_RefusesUnparseableDocuments(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   string
+		compiled string
+	}{
+		{name: "malformed source", source: "version: 2.1\n  bad indent:\nnope", compiled: "version: 2\n"},
+		{name: "malformed compiled", source: "version: 2.1\n", compiled: "version: 2\n  bad indent:\nnope"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := circleci.MergePolicyInput(tc.source, tc.compiled)
+			// A malformed document must fail loudly, not silently fall back
+			// to some partial merge -- the caller (handlePolicyDecide)
+			// treats this as "could not include the compiled form" and
+			// says so, exactly like a compile-endpoint failure.
+			assert.Assert(t, err != nil)
 		})
 	}
 }

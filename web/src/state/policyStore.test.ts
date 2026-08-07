@@ -295,6 +295,47 @@ describe('toDecision', () => {
     expect(decision?.metadataSent).toEqual([]);
     expect(hasRules(decision ?? null)).toBe(true);
   });
+
+  describe('compiledConfigIncluded (issue #25)', () => {
+    it('carries true through when the host says the compiled config was included', () => {
+      const decision = toDecision({
+        available: true,
+        source: 'api',
+        status: 'PASS',
+        compiledConfigIncluded: true,
+      });
+      expect(decision?.compiledConfigIncluded).toBe(true);
+      expect(decision?.compiledConfigReason).toBeUndefined();
+    });
+
+    it('carries the reason through when the host says it was left out', () => {
+      const decision = toDecision({
+        available: true,
+        source: 'api',
+        status: 'HARD_FAIL',
+        compiledConfigIncluded: false,
+        compiledConfigReason: 'this config did not compile',
+      });
+      expect(decision?.compiledConfigIncluded).toBe(false);
+      expect(decision?.compiledConfigReason).toBe(
+        'this config did not compile',
+      );
+    });
+
+    it('defaults to false -- the safe assumption -- when the host omits the field', () => {
+      // Every response the real host sends carries this field (see
+      // internal/host/policy.go's own doc comment: it is deliberately not
+      // `omitempty`), so this covers a response this build predates or a
+      // test fixture that forgot it -- and it must fail closed, not credit
+      // a decision with a stronger guarantee than it can prove it has.
+      const decision = toDecision({
+        available: true,
+        source: 'api',
+        status: 'PASS',
+      });
+      expect(decision?.compiledConfigIncluded).toBe(false);
+    });
+  });
 });
 
 describe('isPolicyDecisionStale', () => {

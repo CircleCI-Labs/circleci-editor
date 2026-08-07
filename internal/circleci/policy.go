@@ -29,6 +29,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The config-policy endpoints, read off the CircleCI CLI rather than guessed.
@@ -151,15 +153,30 @@ type PolicyDecisionRequest struct {
 	// against. Defaults to DefaultPolicyContext when empty.
 	PolicyContext string
 
-	// ConfigYAML is the config to evaluate, exactly as the user wrote it.
+	// ConfigYAML is the document sent verbatim as `input`.
 	//
-	// This is the source config, not the compiled one, which is what
-	// `circleci policy decide` sends and what CircleCI's own policy input
-	// document is: policies that need the expanded config read
-	// `input._compiled_`, a key CircleCI injects at pipeline trigger time.
-	// This client does not synthesise that key itself: doing so would mean
-	// composing a YAML document this editor invented and posting it as
-	// though it were the user's config (#215).
+	// Historically this was always the user's source config exactly as
+	// written, and nothing else: CircleCI's own trigger-time evaluation
+	// additionally injects a "_compiled_" key holding the config after
+	// 2.1->2.0 compilation, and a policy written against
+	// `input._compiled_` (which the docs' own expanded-value examples
+	// require) saw only the source here -- a false PASS on a config that
+	// would HARD_FAIL for real, which is the one failure mode this feature
+	// exists to rule out. Synthesising that key from nothing was rejected
+	// for the opposite reason: composing a YAML document this editor
+	// invented and posting it as though CircleCI's own compiler had
+	// produced it (#215).
+	//
+	// Issue #25 resolves both without contradicting either. The caller
+	// (handlePolicyDecide) compiles the config itself -- the same call
+	// /api/validate already makes -- and uses MergePolicyInput to place
+	// that real compiled result where CircleCI's own evaluator puts it, so
+	// ConfigYAML may now already carry a genuine "_compiled_" key built
+	// from CircleCI's own answer, not a guess at one. This field still
+	// never invents anything: when compilation is unavailable the caller
+	// passes the bare source through unchanged, exactly as before, and
+	// must say so rather than let that decision look identical to one that
+	// did see the compiled form.
 	ConfigYAML string
 
 	// Metadata populates the `data.meta` document policies can branch on
@@ -289,6 +306,57 @@ func (c *Client) DecidePolicy(ctx context.Context, req PolicyDecisionRequest) (*
 		SoftFailures: wire.SoftFailures,
 		Reason:       wire.Reason,
 	}, nil
+}
+
+// MergePolicyInput builds the document CircleCI's own policy engine
+// evaluates at pipeline-trigger time: sourceYAML's own top-level keys, plus
+// a "_compiled_" key holding compiledYAML parsed into the same nested
+// object CircleCI's own compiled config produces.
+//
+// The shape is not a guess. `circleci policy eval --help` documents it
+// directly ("the source config is made available to policies with its
+// compiled form nested under a "_compiled_" key"), and running it live on
+// 2026-08-07 against a config with a reusable executor confirmed it: the
+// resulting input._compiled_.jobs carried the executor already inlined
+// (resource_class on the job itself, no top-level "executors" key at all),
+// exactly the shape this package's vendored docs assume in their own
+// input._compiled_.jobs examples
+// (config-policy-management-overview.adoc). A key with a nearly-right name
+// but the wrong shape under it -- a raw compiled-YAML string, say, instead
+// of a parsed document -- would be the same false-PASS bug with more
+// steps, so this was checked against the real evaluator rather than
+// inferred from the docs' prose alone.
+//
+// This is not the fabrication DecidePolicy's ConfigYAML doc comment
+// describes issue #215 rejecting: MergePolicyInput never invents a
+// compiled config. Callers must supply compiledYAML from CircleCI's own
+// CompileConfig response for this exact sourceYAML; this function only
+// places what CircleCI's compiler already returned where CircleCI's own
+// evaluator would put it.
+func MergePolicyInput(sourceYAML, compiledYAML string) (string, error) {
+	var source map[string]any
+	if err := yaml.Unmarshal([]byte(sourceYAML), &source); err != nil {
+		return "", fmt.Errorf("circleci: parse source config for policy input: %w", err)
+	}
+	var compiled map[string]any
+	if err := yaml.Unmarshal([]byte(compiledYAML), &compiled); err != nil {
+		return "", fmt.Errorf("circleci: parse compiled config for policy input: %w", err)
+	}
+	if source == nil {
+		source = map[string]any{}
+	}
+
+	// CircleCI's own trigger-time input does the same single-key
+	// assignment, not a deep merge: whatever a source config happens to
+	// hold under a literal "_compiled_" key already (nobody writes one) is
+	// superseded, exactly as it would be for real.
+	source["_compiled_"] = compiled
+
+	merged, err := yaml.Marshal(source)
+	if err != nil {
+		return "", fmt.Errorf("circleci: render merged policy input: %w", err)
+	}
+	return string(merged), nil
 }
 
 // escapePathSegments escapes each "/"-separated segment of s individually,

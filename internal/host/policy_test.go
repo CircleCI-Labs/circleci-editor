@@ -32,12 +32,20 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"gopkg.in/yaml.v3"
 	"gotest.tools/v3/assert"
 	is "gotest.tools/v3/assert/cmp"
 
 	"github.com/CircleCI-Labs/circleci-editor/internal/circleci"
 	"github.com/CircleCI-Labs/circleci-editor/internal/host"
 )
+
+// defaultTestCompiledYAML is what newPolicyTestServer's default fakeCompiler
+// hands back when a test does not care about compile behaviour specifically
+// -- distinct from any test's own source text, so a test that forgets to
+// pass its own compiler still gets a visibly-merged input rather than one
+// that happens to look like source-only by coincidence.
+const defaultTestCompiledYAML = "version: 2\njobs: {}\n"
 
 // fakePolicyClient stands in for the host package's unexported policyDecider.
 // It records what it was asked, so the tests can assert that the config, the
@@ -100,7 +108,13 @@ func connectedPolicyEnv() policyEnv {
 	}
 }
 
-func newPolicyTestServer(t *testing.T, env policyEnv, client *fakePolicyClient) *httptest.Server {
+// compiler may be nil: a test that does not care how compilation went gets
+// a compiler that succeeds trivially (issue #25's default), so its
+// assertions about org resolution, verdict passthrough or upstream errors
+// are not also silently pinning compile behaviour it never meant to
+// exercise. A test that does care -- the ones in this file named for
+// "CompiledConfig" -- passes its own fakeCompiler instead.
+func newPolicyTestServer(t *testing.T, env policyEnv, client *fakePolicyClient, compiler *fakeCompiler) *httptest.Server {
 	t.Helper()
 
 	clearCircleEnv(t)
@@ -115,8 +129,10 @@ func newPolicyTestServer(t *testing.T, env policyEnv, client *fakePolicyClient) 
 	if client != nil {
 		opts.PolicyClient = client
 	}
-	// A stray compile must be as loud as a stray policy decision.
-	opts.Compiler = &fakeCompiler{err: errAssertNeverCalled}
+	if compiler == nil {
+		compiler = &fakeCompiler{result: &circleci.CompileResult{Valid: true, OutputYAML: defaultTestCompiledYAML}}
+	}
+	opts.Compiler = compiler
 
 	srv, err := host.New(opts)
 	assert.NilError(t, err)
@@ -145,6 +161,8 @@ type policyBody struct {
 		Rule   string `json:"rule"`
 		Reason string `json:"reason"`
 	} `json:"softFailures"`
+	CompiledConfigIncluded bool   `json:"compiledConfigIncluded"`
+	CompiledConfigReason   string `json:"compiledConfigReason"`
 }
 
 func decidePolicy(t *testing.T, ts *httptest.Server, contents string) (int, string, policyBody) {
@@ -175,7 +193,7 @@ func passingClient() *fakePolicyClient {
 
 func TestServer_PolicyDecide_Pass(t *testing.T) {
 	client := passingClient()
-	ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 	status, _, got := decidePolicy(t, ts, "version: 2.1\n")
 	assert.Equal(t, status, http.StatusOK)
@@ -190,8 +208,21 @@ func TestServer_PolicyDecide_Pass(t *testing.T) {
 	// that came back is what the decision was keyed by.
 	assert.Equal(t, client.gotOrgSlug, "gh/acme")
 	assert.Equal(t, client.gotRequest.OwnerID, "owner-uuid")
-	assert.Equal(t, client.gotRequest.ConfigYAML, "version: 2.1\n")
 	assert.Equal(t, client.gotRequest.PolicyContext, "config")
+
+	// Issue #25: with a compiler that succeeds (newPolicyTestServer's
+	// default), what actually reaches the decision endpoint is no longer
+	// the bare source -- it is source-plus-compiled, so this asserts on the
+	// parsed document rather than a literal string match against either
+	// input's own YAML rendering. See
+	// TestServer_PolicyDecide_MergesCompiledConfigWhenAvailable for the
+	// shape in full.
+	var sentInput map[string]any
+	assert.NilError(t, yaml.Unmarshal([]byte(client.gotRequest.ConfigYAML), &sentInput))
+	assert.Equal(t, sentInput["version"], 2.1)
+	assert.Assert(t, sentInput["_compiled_"] != nil)
+	assert.Equal(t, got.CompiledConfigIncluded, true)
+	assert.Equal(t, got.CompiledConfigReason, "")
 }
 
 func TestServer_PolicyDecide_ThreeVerdictsAreReportedVerbatim(t *testing.T) {
@@ -249,7 +280,7 @@ func TestServer_PolicyDecide_ThreeVerdictsAreReportedVerbatim(t *testing.T) {
 				org:      &circleci.Organization{ID: "owner-uuid"},
 				decision: tc.decision,
 			}
-			ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+			ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 			status, _, got := decidePolicy(t, ts, "version: 2.1\n")
 			assert.Equal(t, status, http.StatusOK)
@@ -278,12 +309,109 @@ func TestServer_PolicyDecide_PassAgainstAnEmptyBundleKeepsItsEmptyRuleList(t *te
 		org:      &circleci.Organization{ID: "owner-uuid"},
 		decision: &circleci.PolicyDecision{Status: circleci.PolicyStatusPass},
 	}
-	ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 	_, _, got := decidePolicy(t, ts, "version: 2.1\n")
 	assert.Equal(t, got.Available, true)
 	assert.Equal(t, got.Status, "PASS")
 	assert.Equal(t, len(got.EnabledRules), 0)
+}
+
+// TestServer_PolicyDecide_MergesCompiledConfigWhenAvailable is issue #25's
+// core assertion: when this config compiles, the document that reaches the
+// decision endpoint is source-plus-compiled, in the exact nested shape
+// `circleci policy eval` produces for a real evaluation (see
+// circleci.MergePolicyInput's own doc comment for how that shape was
+// confirmed), not the source alone #215 always sent.
+func TestServer_PolicyDecide_MergesCompiledConfigWhenAvailable(t *testing.T) {
+	client := passingClient()
+	compiler := &fakeCompiler{result: &circleci.CompileResult{
+		Valid: true,
+		OutputYAML: "version: 2\n" +
+			"jobs:\n" +
+			"  build:\n" +
+			"    resource_class: medium\n",
+	}}
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, compiler)
+
+	source := "version: 2.1\n" +
+		"executors:\n" +
+		"  e:\n" +
+		"    resource_class: medium\n" +
+		"jobs:\n" +
+		"  build:\n" +
+		"    executor: e\n"
+
+	status, _, got := decidePolicy(t, ts, source)
+	assert.Equal(t, status, http.StatusOK)
+	assert.Equal(t, got.Available, true)
+	assert.Equal(t, got.CompiledConfigIncluded, true)
+	assert.Equal(t, got.CompiledConfigReason, "")
+
+	// Compiled in this project's own org context -- the same one the
+	// decision itself is keyed by, not an anonymous compile.
+	assert.Equal(t, compiler.gotReq.ConfigYAML, source)
+	assert.Equal(t, compiler.gotReq.OwnerID, "owner-uuid")
+
+	var sentInput map[string]any
+	assert.NilError(t, yaml.Unmarshal([]byte(client.gotRequest.ConfigYAML), &sentInput))
+	assert.Assert(t, sentInput["executors"] != nil, "the source's own top-level keys must still be present")
+
+	compiledSection, ok := sentInput["_compiled_"].(map[string]any)
+	assert.Assert(t, ok, "_compiled_ must be a nested document, not a compiled-YAML string")
+	jobs, ok := compiledSection["jobs"].(map[string]any)
+	assert.Assert(t, ok)
+	build, ok := jobs["build"].(map[string]any)
+	assert.Assert(t, ok)
+	assert.Equal(t, build["resource_class"], "medium")
+}
+
+// TestServer_PolicyDecide_SourceOnlyWhenCompileFails covers the honesty
+// requirement issue #25 makes non-optional: a compile failure degrades the
+// check to source-only, it does not cancel it, and the response says so
+// rather than looking identical to a decision that did see the compiled
+// form.
+func TestServer_PolicyDecide_SourceOnlyWhenCompileFails(t *testing.T) {
+	client := passingClient()
+	compiler := &fakeCompiler{err: &circleci.APIError{
+		StatusCode: http.StatusInternalServerError,
+		Method:     http.MethodPost,
+		Path:       "/api/v2/compile-config-with-defaults",
+		Body:       "boom",
+	}}
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, compiler)
+
+	status, body, got := decidePolicy(t, ts, "version: 2.1\n")
+	assert.Equal(t, status, http.StatusOK)
+	assert.Equal(t, got.Available, true, "a compile failure degrades the input, it does not cancel the check")
+	assert.Equal(t, got.CompiledConfigIncluded, false)
+	assert.Assert(t, is.Contains(got.CompiledConfigReason, "compiled"))
+	assert.Assert(t, !strings.Contains(body, "boom"), "the compile endpoint's own response body must not leak through this one")
+
+	// Exactly what issue #215 always sent: nothing invented, nothing missing.
+	assert.Equal(t, client.gotRequest.ConfigYAML, "version: 2.1\n")
+}
+
+// TestServer_PolicyDecide_SourceOnlyWhenConfigDoesNotCompile covers the
+// other way compilation can fail to produce a "_compiled_" key: the call
+// itself succeeds, but CircleCI says the config is invalid. A config that
+// does not compile never reaches a real pipeline-trigger evaluation either,
+// so there is no compiled form to include -- but the source-only check
+// still runs and still says why.
+func TestServer_PolicyDecide_SourceOnlyWhenConfigDoesNotCompile(t *testing.T) {
+	client := passingClient()
+	compiler := &fakeCompiler{result: &circleci.CompileResult{
+		Valid:  false,
+		Errors: []circleci.CompileError{{Message: "unknown top-level key: nonsense"}},
+	}}
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, compiler)
+
+	status, _, got := decidePolicy(t, ts, "version: 2.1\nnonsense: true\n")
+	assert.Equal(t, status, http.StatusOK)
+	assert.Equal(t, got.Available, true)
+	assert.Equal(t, got.CompiledConfigIncluded, false)
+	assert.Assert(t, is.Contains(got.CompiledConfigReason, "did not compile"))
+	assert.Equal(t, client.gotRequest.ConfigYAML, "version: 2.1\nnonsense: true\n")
 }
 
 func TestServer_PolicyDecide_SendsOnlyTheMetadataItActuallyHas(t *testing.T) {
@@ -317,7 +445,7 @@ func TestServer_PolicyDecide_SendsOnlyTheMetadataItActuallyHas(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			client := passingClient()
-			ts := newPolicyTestServer(t, tc.env, client)
+			ts := newPolicyTestServer(t, tc.env, client, nil)
 
 			_, _, got := decidePolicy(t, ts, "version: 2.1\n")
 			assert.Equal(t, got.Available, true)
@@ -334,7 +462,7 @@ func TestServer_PolicyDecide_NoTokenSendsNothingAndSaysWhy(t *testing.T) {
 	client := passingClient()
 	env := connectedPolicyEnv()
 	env.token = ""
-	ts := newPolicyTestServer(t, env, client)
+	ts := newPolicyTestServer(t, env, client, nil)
 
 	status, _, got := decidePolicy(t, ts, "version: 2.1\n")
 	assert.Equal(t, status, http.StatusOK)
@@ -350,7 +478,7 @@ func TestServer_PolicyDecide_NoTokenSendsNothingAndSaysWhy(t *testing.T) {
 
 func TestServer_PolicyDecide_NoOrganizationSendsNothingAndSaysWhy(t *testing.T) {
 	client := passingClient()
-	ts := newPolicyTestServer(t, policyEnv{token: sentinelToken}, client)
+	ts := newPolicyTestServer(t, policyEnv{token: sentinelToken}, client, nil)
 
 	status, _, got := decidePolicy(t, ts, "version: 2.1\n")
 	assert.Equal(t, status, http.StatusOK)
@@ -361,7 +489,7 @@ func TestServer_PolicyDecide_NoOrganizationSendsNothingAndSaysWhy(t *testing.T) 
 
 func TestServer_PolicyDecide_EmptyConfigIsNotAPass(t *testing.T) {
 	client := passingClient()
-	ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 	status, _, got := decidePolicy(t, ts, "   \n\n")
 	assert.Equal(t, status, http.StatusOK)
@@ -440,7 +568,7 @@ func TestServer_PolicyDecide_UpstreamFailures(t *testing.T) {
 				org:         &circleci.Organization{ID: "owner-uuid"},
 				decisionErr: tc.err,
 			}
-			ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+			ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 			status, body, got := decidePolicy(t, ts, "version: 2.1\n")
 			assert.Equal(t, status, tc.wantStatus)
@@ -492,7 +620,7 @@ func TestServer_PolicyDecide_OrganizationLookupFailures(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &fakePolicyClient{orgErr: tc.err}
-			ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+			ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 			status, body, got := decidePolicy(t, ts, "version: 2.1\n")
 			assert.Equal(t, status, tc.wantStatus)
@@ -520,7 +648,7 @@ func TestServer_PolicyDecide_UnknownStatusIsNotAVerdict(t *testing.T) {
 			EnabledRules: []string{"whatever"},
 		},
 	}
-	ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 	status, body, got := decidePolicy(t, ts, "version: 2.1\n")
 	assert.Equal(t, status, http.StatusOK)
@@ -534,7 +662,7 @@ func TestServer_PolicyDecide_UnknownStatusIsNotAVerdict(t *testing.T) {
 
 func TestServer_PolicyDecide_OrganizationIsResolvedOncePerProcess(t *testing.T) {
 	client := passingClient()
-	ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 	for range 3 {
 		status, _, got := decidePolicy(t, ts, "version: 2.1\n")
@@ -548,7 +676,7 @@ func TestServer_PolicyDecide_OrganizationIsResolvedOncePerProcess(t *testing.T) 
 
 func TestServer_PolicyDecide_FailedOrganizationLookupIsNotCached(t *testing.T) {
 	client := &fakePolicyClient{orgErr: &circleci.APIError{StatusCode: http.StatusInternalServerError}}
-	ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 	_, _, _ = decidePolicy(t, ts, "version: 2.1\n")
 	_, _, _ = decidePolicy(t, ts, "version: 2.1\n")
@@ -569,7 +697,7 @@ func TestServer_PolicyDecide_MalformedRequests(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			client := passingClient()
-			ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+			ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 			status, _ := doRequest(t, ts, http.MethodPost, "/api/policy/decide", []byte(tc.body))
 			assert.Equal(t, status, http.StatusBadRequest)
@@ -580,7 +708,7 @@ func TestServer_PolicyDecide_MalformedRequests(t *testing.T) {
 
 func TestServer_PolicyDecide_RejectsNonPost(t *testing.T) {
 	client := passingClient()
-	ts := newPolicyTestServer(t, connectedPolicyEnv(), client)
+	ts := newPolicyTestServer(t, connectedPolicyEnv(), client, nil)
 
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 		status, _ := doRequest(t, ts, method, "/api/policy/decide", nil)

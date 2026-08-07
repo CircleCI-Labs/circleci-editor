@@ -44,10 +44,15 @@
  * the wire sends -- no `metadata`, no `violations` array (#215) -- so this
  * view (and the AI context in `lib/ai/context.ts`) cannot offer more detail
  * than CircleCI's own decision carries. Sending the *compiled* config
- * (`input._compiled_`, issue #239) would not change that: it would change
- * which rules fire, not what a decision reports about the ones that do, so
- * nothing here forecloses #239 -- it is simply a different, independent
- * change to what gets posted, still not implemented.
+ * (`input._compiled_`, issue #25) does not change that: it changes which
+ * rules fire, not what a decision reports about the ones that do -- so this
+ * view still cannot show more than `enabled_rules`/`hard_failures`/
+ * `soft_failures` carry, it can only show *more rules firing* now that a
+ * rule written against the compiled form has something to fire against.
+ * When it did not run -- compilation failed, or the config does not
+ * compile -- this view says so explicitly (see the "evaluated the source
+ * config only" notice below) rather than leaving that gap to be
+ * discovered from a rule that stayed silent.
  *
  * Which means this tab has nothing to show until a check has run -- and it
  * says so, rather than showing an empty list that could be read as "your
@@ -229,6 +234,28 @@ export function PolicyRulesView({ onOpenGuideSection }: PolicyRulesViewProps) {
               ? ' · from a check of an earlier version of this file -- a fresh check runs automatically'
               : ''}
           </p>
+
+          {decision.compiledConfigIncluded ? null : (
+            // Issue #25: a real decision, but not the one CircleCI itself
+            // would reach -- the engine there also sees the config after
+            // 2.1->2.0 compilation (`input._compiled_`), and a rule written
+            // against that may simply not have fired below even though it
+            // would for real. Stated here rather than left for a missing
+            // rule to imply, because "PASS" and "PASS, but only checked
+            // against the source" must never look the same.
+            <p
+              className="mb-2 rounded border border-cc-warning/40 bg-cc-panel px-2 py-1.5 leading-relaxed text-cc-warning"
+              data-testid="policy-compiled-unavailable"
+            >
+              This check evaluated the source config only
+              {decision.compiledConfigReason
+                ? `: ${decision.compiledConfigReason}`
+                : ''}
+              . CircleCI&apos;s own pipeline-trigger evaluation also inspects
+              the config after 2.1→2.0 compilation, so a rule written against
+              that may not have fired below even though it would on CircleCI.
+            </p>
+          )}
 
           {decision.enabledRules.length === 0 ? (
             <p className="rounded border border-cc-border bg-cc-panel px-2 py-1.5 leading-relaxed text-cc-text-muted">

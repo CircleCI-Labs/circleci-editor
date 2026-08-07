@@ -156,6 +156,9 @@ export interface PolicyStub {
   orgSlug?: string;
   policyContext?: string;
   metadataSent?: string[];
+  /** Issue #25. Defaults to `true` below -- a spec exercising the source-only path overrides it explicitly rather than every other spec having to opt into the steady state. */
+  compiledConfigIncluded?: boolean;
+  compiledConfigReason?: string;
 }
 
 /**
@@ -191,6 +194,7 @@ export const POLICY_HARD_FAIL_STUB: PolicyStub = {
   orgSlug: 'gh/example',
   policyContext: 'config',
   metadataSent: ['project_id', 'vcs.branch'],
+  compiledConfigIncluded: true,
 };
 
 export function invalidStub(messages: string[]): ValidateStub {
@@ -489,6 +493,7 @@ export async function mockHostApi(
     available: true,
     source: 'api',
     status: 'PASS',
+    compiledConfigIncluded: true,
   };
   const policyChecks: string[] = [];
   // Issue #105. `const`, not `let`: no spec needs to vary these mid-run yet,
