@@ -8,6 +8,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Document } from 'yaml';
 
+import type { ResourceClassesResponse } from '~/lib/resourceClasses/types';
+import { __resetResourceClassesCacheForTests } from '~/lib/resourceClasses/useResourceClasses';
 import type { UsageJobSummary, UsageResponse } from '~/lib/rpc/client';
 import { getIn, parseConfig } from '~/lib/yaml/documentUtils';
 import { useOrbStore } from '~/state/orbStore';
@@ -18,13 +20,14 @@ import { RecommendationsSection } from './RecommendationsSection';
 type MutateFn = (fn: (doc: Document) => void) => void;
 
 // Every test in this file except the "resource-class right-sizing" group
-// below is exercising a detector that has nothing to do with usage data;
-// stubbing `getUsage` to a promise that never resolves keeps
-// `RecommendationsSection`'s automatic `ensureFetched()` effect from ever
-// updating state after those tests' assertions run (the alternative --
-// letting the real fetch reject against jsdom's fetch -- still "works", but
-// resolves on a later microtask than `render()` returns, outside any `act()`
-// those tests perform, so React logs a warning for every one of them).
+// below is exercising a detector that has nothing to do with usage or
+// resource-class data; stubbing both `getUsage` and `getResourceClasses` to a
+// promise that never resolves keeps `RecommendationsSection`'s automatic
+// fetch effects from ever updating state after those tests' assertions run
+// (the alternative -- letting the real fetch reject against jsdom's fetch --
+// still "works", but resolves on a later microtask than `render()` returns,
+// outside any `act()` those tests perform, so React logs a warning for every
+// one of them).
 vi.mock('~/lib/rpc/client', async () => {
   const actual =
     await vi.importActual<typeof import('~/lib/rpc/client')>(
@@ -33,6 +36,9 @@ vi.mock('~/lib/rpc/client', async () => {
   return {
     ...actual,
     getUsage: vi.fn<typeof actual.getUsage>(() => new Promise(() => {})),
+    getResourceClasses: vi.fn<typeof actual.getResourceClasses>(
+      () => new Promise(() => {}),
+    ),
   };
 });
 
@@ -44,6 +50,7 @@ function parse(text: string) {
 
 afterEach(() => {
   window.localStorage.clear();
+  __resetResourceClassesCacheForTests();
   act(() => {
     useOrbStore.setState({ parsedOrbs: {}, orbVersionsCache: {} });
     useUsageStore.setState({
@@ -278,9 +285,67 @@ workflows:
       };
     }
 
-    it('surfaces a low-cpu finding, with no action button (no offerings catalog yet)', async () => {
+    // A minimal `/api/resource-classes` response with real `rank` values on
+    // its Docker/x86 table (issue #8) -- just enough of the shape
+    // `resourceClassCatalog.ts` reads to let `large`'s neighbours resolve to
+    // `medium+` (one smaller) and `xlarge` (one larger), the same relative
+    // positions the real vendored table gives them. Not the full ten-table
+    // fixture `resourceClasses/testFixtures.ts` keeps for the picker's own
+    // tests -- this describe block only ever asks about a Docker `large`.
+    function resourceClassesResponse(): ResourceClassesResponse {
+      return {
+        derived: true,
+        environments: [
+          {
+            id: 'x86',
+            label: 'x86',
+            kind: 'docker',
+            architecture: 'x86_64',
+            generation: 'gen1',
+            classes: [
+              {
+                name: 'small',
+                architecture: 'x86_64',
+                generation: 'gen1',
+                rank: 0,
+              },
+              {
+                name: 'medium',
+                architecture: 'x86_64',
+                generation: 'gen1',
+                rank: 1,
+              },
+              {
+                name: 'medium+',
+                architecture: 'x86_64',
+                generation: 'gen1',
+                rank: 2,
+              },
+              {
+                name: 'large',
+                architecture: 'x86_64',
+                generation: 'gen1',
+                rank: 3,
+              },
+              {
+                name: 'xlarge',
+                architecture: 'x86_64',
+                generation: 'gen1',
+                rank: 4,
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    it('surfaces a low-cpu finding, with no action button while resource classes have not loaded', async () => {
       const { getUsage } = await import('~/lib/rpc/client');
       vi.mocked(getUsage).mockResolvedValueOnce(usageResponse());
+      // getResourceClasses keeps its module default (never resolves, see the
+      // top-level mock) -- exercising the window before `resourceClassCatalog`
+      // exists at all, which must degrade to no action button rather than
+      // wait or guess.
 
       render(
         <RecommendationsSection
@@ -297,6 +362,66 @@ workflows:
       expect(
         screen.getByText(/12 runs over the last 7 days/),
       ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /^Move to/ }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('names and can apply a smaller class once the resource-class tables resolve, with a plan-dependence caveat', async () => {
+      const { getUsage, getResourceClasses } = await import('~/lib/rpc/client');
+      vi.mocked(getUsage).mockResolvedValueOnce(usageResponse());
+      vi.mocked(getResourceClasses).mockResolvedValueOnce(
+        resourceClassesResponse(),
+      );
+
+      const mutate = vi.fn<MutateFn>((fn) => fn(doc));
+      const doc = parse(RESOURCE_CONFIG);
+      render(<RecommendationsSection doc={doc} mutate={mutate} />);
+
+      // `medium+` is the nearest class ranked below `large` on the Docker
+      // table above -- the same "nearest, not just any smaller class" rule
+      // `detectResourceUtilization.test.ts` already pins against a stub
+      // catalog, now exercised through the real one.
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: 'Move to medium+' }),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByText(/utilisation suggests `medium\+` would be enough/),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/depends on your CircleCI plan/),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Move to medium+' }));
+      expect(getIn(doc, ['jobs', 'build', 'resource_class'])).toBe('medium+');
+    });
+
+    it('never names a class the resource-class tables do not confirm, even once they resolve', async () => {
+      const { getUsage, getResourceClasses } = await import('~/lib/rpc/client');
+      // The job's own resource class ("large") is not in this response at
+      // all -- e.g. a class the vendored tables have since renamed or
+      // dropped. No environment can be found to rank within, so this must
+      // stay information-only rather than guess.
+      vi.mocked(getUsage).mockResolvedValueOnce(usageResponse());
+      vi.mocked(getResourceClasses).mockResolvedValueOnce({
+        derived: true,
+        environments: [],
+      });
+
+      render(
+        <RecommendationsSection
+          doc={parse(RESOURCE_CONFIG)}
+          mutate={vi.fn<MutateFn>()}
+        />,
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.getByText(/averaged 18% median CPU on large/),
+        ).toBeInTheDocument(),
+      );
       expect(
         screen.queryByRole('button', { name: /^Move to/ }),
       ).not.toBeInTheDocument();

@@ -54,6 +54,9 @@ import (
 //     verbatim, so "x86 (gen2)" is CircleCI's wording and not ours;
 //   - the vCPU/RAM/disk summary -- the table's remaining numeric columns;
 //   - which class upstream marks `(default)`;
+//   - the size order within one table (Rank) -- from the same vCPU/RAM
+//     columns, never from the t-shirt name (see resourceclassrank.go's own
+//     doc comment, issue #8);
 //   - architecture and generation -- see classArchitecture/classGeneration,
 //     both computed from the class *name*, because that is where CircleCI
 //     encodes them (`arm.medium`, `xlarge.gen2`). There is no second
@@ -170,6 +173,21 @@ type ResourceClass struct {
 	Architecture string `json:"architecture"`
 	// Generation is GenerationGen1 or GenerationGen2 -- derived from Name.
 	Generation string `json:"generation"`
+	// Rank orders this class among the *other classes in the same
+	// ResourceClassEnvironment* -- 0 is the smallest, larger classes get
+	// larger Ranks, and classes that tie on both vCPUs and RAM share one.
+	// Derived from the table's own vCPU/RAM columns, never from Name -- see
+	// resourceclassrank.go's package-level doc comment for why the name is a
+	// sanity check only, never the input (issue #8).
+	//
+	// nil when this row's vCPU or RAM cell could not be parsed as a number.
+	// A caller ranking classes must treat nil as "unknown", never as
+	// "smallest" or "excluded from the ladder for a reason" -- it is neither;
+	// this file simply could not read a number here. Comparing Rank across
+	// two ResourceClassEnvironments is always a mistake regardless: `large`
+	// on Docker and `large` on macOS are unrelated machines, and Rank is only
+	// ever meaningful within the one table it came from.
+	Rank *int `json:"rank,omitempty"`
 }
 
 // ResourceClassEnvironment is one upstream resource table: the classes it
@@ -459,6 +477,11 @@ func isResourceClassTable(table *Table) bool {
 // "arm.medium (default)".
 func resourceClassesFromTable(table *Table, kind string) ([]ResourceClass, error) {
 	out := make([]ResourceClass, 0, len(table.Rows))
+	// readings runs parallel to out, and feeds assignRanks below -- kept
+	// separate from ResourceClass itself because it is an intermediate
+	// (rowIndex -> parsed vCPU/RAM), not something this file ever hands to a
+	// caller; ResourceClass only ever gets the ordinal assignRanks produces.
+	readings := make([]classVCPURAM, 0, len(table.Rows))
 	for _, row := range table.Rows {
 		if len(row) == 0 {
 			continue
@@ -474,10 +497,12 @@ func resourceClassesFromTable(table *Table, kind string) ([]ResourceClass, error
 			Architecture: classArchitecture(name, kind),
 			Generation:   classGeneration(name),
 		})
+		readings = append(readings, readVCPURAM(table.Header, row))
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("the table has no rows with a class name")
 	}
+	assignRanks(out, readings)
 	return out, nil
 }
 
