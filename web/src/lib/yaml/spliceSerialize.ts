@@ -403,7 +403,7 @@ function renderMapEntryWithCursor(
     const prefix = keyChanged
       ? oldText.slice(cursor, keyLineStart(oldPair, oldText)) +
         keyAndSeparator(oldPair, newPair, oldText, indent)
-      : oldText.slice(cursor, valueRange[0]);
+      : oldText.slice(cursor, valueSpliceStart(oldText, oldPair.value));
     return { text: prefix + children, nextCursor: valueRange[2] };
   }
 
@@ -644,6 +644,128 @@ function itemRange(item: unknown): [number, number, number] | undefined {
   return hasRange(item) ? item.range : undefined;
 }
 
+/**
+ * The `<indent>- ` that introduced a sequence item in the old text, or
+ * undefined when the run before the item is not a plain dash marker.
+ *
+ * A YAMLSeq's own `range[0]` points at its first `-`, but an *item's*
+ * `range[0]` points past the dash at its content: for `  - checkout`, the seq
+ * starts at the dash and the item starts at `checkout`. An item that stays put
+ * is spliced from a cursor that began at the seq's dash, so it keeps its
+ * marker; a *moved* item was spliced from its own `range[0]`, which drops both
+ * the indentation and the `- ` -- producing a line at column zero, which is a
+ * different document, so the safety net rejected the splice and re-emitted the
+ * whole file. Reordering one step therefore reflowed every comment in it.
+ *
+ * Read back from the old text rather than rebuilt from `indent`, so an unusual
+ * dash spacing (`-   item`) moves with the item instead of being normalised.
+ */
+/**
+ * Where a block sequence's own text begins, counting the indentation of its
+ * first line.
+ *
+ * A YAMLSeq's `range[0]` is its first `-`, so the indentation before that dash
+ * sits outside the seq's range and used to be emitted by the *parent* as part
+ * of the "<key>: " prefix. That worked only while the seq's first line stayed
+ * first: inserting a moved item ahead of it left the following item spliced
+ * from the dash with no indentation at all, at column zero, which is a
+ * different document -- so the safety net re-emitted the whole file, and a step
+ * moved to the top of a list reflowed every comment in it.
+ *
+ * Making the boundary the line start instead means every item supplies its own
+ * indentation, whether it is spliced verbatim, moved, or freshly rendered, and
+ * the order they appear in stops mattering. Callers must cut their prefix at
+ * this same offset -- see valueSpliceStart.
+ *
+ * Walks back over spaces and tabs only, and only to a line start, so a flow
+ * sequence sharing a line with its key (`steps: [a, b]`) is left exactly where
+ * it was.
+ */
+function seqLineStart(oldText: string, start: number): number {
+  let i = start;
+  while (i > 0 && (oldText[i - 1] === ' ' || oldText[i - 1] === '\t')) i--;
+  return i === 0 || oldText[i - 1] === '\n' ? i : start;
+}
+
+/**
+ * The offset a parent should splice up to before handing a value's own text to
+ * renderMapChildren/renderSeqChildren. Only block sequences move the boundary;
+ * see seqLineStart.
+ */
+function valueSpliceStart(oldText: string, value: unknown): number {
+  if (!hasRange(value)) return 0;
+  const start = value.range[0];
+  return isSeq(value) ? seqLineStart(oldText, start) : start;
+}
+
+function itemDashPrefix(oldText: string, start: number): string | undefined {
+  let i = start;
+  while (i > 0 && oldText[i - 1] !== '\n') i--;
+  const prefix = oldText.slice(i, start);
+  return /^[ \t]*-[ \t]+$/.test(prefix) ? prefix : undefined;
+}
+
+/**
+ * Replaces the first line's indentation with `dash`, for an item whose body was
+ * rendered as if it started a line of its own.
+ *
+ * In the usual `- ` convention the dash marker is exactly as wide as the
+ * content indentation it replaces (`      - ` against `image` at column 8), so
+ * swapping one for the other leaves every continuation line already correct.
+ */
+function withDashPrefix(text: string, dash: string): string {
+  return dash + text.replace(/^[ \t]*/, '');
+}
+
+/**
+ * Pairs an added item with a removed one that is most likely *the same item,
+ * modified* rather than an unrelated insertion.
+ *
+ * Sequence items have no keys, so there is nothing to match on and any answer
+ * is a heuristic -- which is why editing inside a sequence item used to
+ * re-render the whole item and collapse the alignment inside it. Matching on
+ * container kind, in order, is the cheapest heuristic that handles the case
+ * that actually occurs: one item edited in place, which diffArrays reports as
+ * that item removed and a new one added at the same position.
+ *
+ * Being wrong is safe, which is what makes the heuristic acceptable rather than
+ * merely convenient. The pair is only ever used to recurse into the *new*
+ * item's children, reusing old bytes for subtrees that compare equal -- so a
+ * mispairing reuses fewer bytes and renders more from scratch. It cannot
+ * produce a different document, and serializeMinimalDiff re-parses and checks
+ * equivalence regardless.
+ */
+function takeModifiedOrphan(
+  orphans: { node: Node; range: [number, number, number] }[],
+  node: Node,
+  newItems: readonly Node[],
+): { node: Node; range: [number, number, number] } | undefined {
+  const i = orphans.findIndex(
+    (o) =>
+      ((isMap(o.node) && isMap(node)) || (isSeq(o.node) && isSeq(node))) &&
+      // Only when the item carries no leading comment or blank line of its
+      // own. That region sits *before* the dash, outside the item's range, so
+      // splicing the item's own bytes would silently drop it -- which is what
+      // happened to `# test gates the deploy` above a renamed workflow entry.
+      // The result still parsed and still read correctly, so the only thing
+      // that caught it was the equivalence check refusing the splice, and the
+      // resulting whole-document re-emit relocated a comment thirty lines
+      // away. Falling back to a fresh render here keeps that comment; the
+      // alignment inside such an item is the lesser loss, and #41 records it.
+      !o.node.commentBefore &&
+      !o.node.spaceBefore &&
+      !node.commentBefore &&
+      !node.spaceBefore &&
+      // Never claim an orphan that some item in the new sequence matches
+      // exactly: that one is a *move*, and its own bytes can be reused
+      // verbatim. Taking it for a modification instead rebuilds a line that
+      // did not have to change -- which showed up as a rename touching three
+      // sites reporting a fourth changed line.
+      !newItems.some((n) => nodeDeepEqual(o.node, n)),
+  );
+  return i === -1 ? undefined : orphans.splice(i, 1)[0];
+}
+
 function renderSeqChildren(
   oldSeq: YAMLSeq | undefined,
   newSeq: YAMLSeq,
@@ -667,17 +789,41 @@ function renderSeqChildren(
     comparator: nodeDeepEqual,
   });
 
-  let cursor = startCursor ?? (hasRange(oldSeq) ? oldSeq.range[0] : 0);
+  let cursor =
+    startCursor ??
+    (hasRange(oldSeq) ? seqLineStart(oldText, oldSeq.range[0]) : 0);
+
+  // Every removed item is collected up front, before anything is emitted, so
+  // that an *addition* can find its orphan regardless of where the removal
+  // sits in the chunk list.
+  //
+  // Order matters here and used to be assumed. diffArrays reports a move
+  // toward the front as the addition first and the removal afterwards, so an
+  // orphan pool filled during emission was still empty when the new position
+  // asked for it -- the item was fresh-rendered instead of moved, losing its
+  // comment alignment, and the resulting mismatch sent the whole document
+  // through a re-emit. Moves toward the back happened to work, which is why
+  // this looked like it worked at all: `moveSeqItem` reordering a step
+  // reflowed every comment in the file only when the step moved up.
   const removedOrphans: { node: Node; range: [number, number, number] }[] = [];
+  for (const chunk of chunks) {
+    if (!chunk.removed) continue;
+    for (const node of chunk.value) {
+      const r = itemRange(node);
+      if (r) removedOrphans.push({ node, range: r });
+    }
+  }
+
   const parts: string[] = [];
   let oldPtr = 0;
 
   for (const chunk of chunks) {
     if (chunk.removed) {
+      // Already pooled above; here we only step the cursor past the removed
+      // bytes so the next verbatim slice starts in the right place.
       for (const node of chunk.value) {
         const r = itemRange(node);
         if (r) {
-          removedOrphans.push({ node, range: r });
           cursor = r[2];
         }
         oldPtr++;
@@ -691,13 +837,52 @@ function renderSeqChildren(
         );
         const [orphan] =
           orphanIdx !== -1 ? removedOrphans.splice(orphanIdx, 1) : [];
-        if (orphan) {
+        const dash = orphan
+          ? itemDashPrefix(oldText, orphan.range[0])
+          : undefined;
+        if (orphan && dash !== undefined) {
           // Same depth (same seq), so the orphan's own bytes are still valid
           // verbatim -- this is what makes a plain reorder (moveSeqItem) a
-          // pure move rather than a delete+insert.
-          parts.push(oldText.slice(orphan.range[0], orphan.range[2]));
+          // pure move rather than a delete+insert. The dash marker has to come
+          // back with them, though: see itemDashPrefix.
+          let moved = oldText.slice(orphan.range[0], orphan.range[2]);
+          // The last item of a sequence has no trailing newline inside its own
+          // range, so a move that lands it anywhere but last would otherwise
+          // run into the following line.
+          if (!moved.endsWith('\n')) moved += '\n';
+          parts.push(dash + moved);
         } else if (isNode(node)) {
-          parts.push(renderFreshItem(node, indent));
+          // Not a move: perhaps the same item with something changed inside it.
+          // Recursing keeps every untouched line of that item verbatim, which
+          // is what protects aligned comments on the lines the user did not
+          // edit. See takeModifiedOrphan for why a wrong guess is harmless.
+          const modified = takeModifiedOrphan(removedOrphans, node, newItems);
+          const modifiedDash = modified
+            ? itemDashPrefix(oldText, modified.range[0])
+            : undefined;
+          if (modified && modifiedDash !== undefined) {
+            const body =
+              isMap(modified.node) && isMap(node)
+                ? renderMapChildren(
+                    modified.node,
+                    node,
+                    oldText,
+                    indent + '  ',
+                    modified.range[0],
+                  )
+                : renderSeqChildren(
+                    modified.node as YAMLSeq,
+                    node as YAMLSeq,
+                    oldText,
+                    indent + '  ',
+                    modified.range[0],
+                  );
+            let text = withDashPrefix(body, modifiedDash);
+            if (!text.endsWith('\n')) text += '\n';
+            parts.push(text);
+          } else {
+            parts.push(renderFreshItem(node, indent));
+          }
         }
       }
       continue;
