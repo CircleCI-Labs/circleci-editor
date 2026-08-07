@@ -47,6 +47,24 @@ filing a new issue, use the appropriate template (bug report or feature
 request) and fill it in as completely as possible — this makes it much
 easier for maintainers to triage and respond.
 
+### `#nnn` in source comments is history, not a link
+
+This codebase comments heavily, and many of those comments cite an issue
+number — `issue #285`, `#104`, `#219`. **Most of those numbers refer to this
+project's predecessor repository, not to this one.** They were written while
+the work lived elsewhere, and they came across with the code.
+
+They are kept as written, deliberately. The prose around them explains the
+reasoning on its own, which is the part worth having; the number is a
+footnote about when a decision was made. Rewriting 318 files to strip them
+would bury the history of every one of those files in a single mechanical
+commit, for a footnote.
+
+So: treat a bare `#nnn` in a comment as provenance, not as somewhere to
+click. If you are writing a *new* comment, cite an issue in this repository
+or describe the reason instead — a number that resolves to an unrelated
+issue is worse than no number at all.
+
 ## Opening a Pull Request
 
 1. Fork the repository and create a topic branch off `main`.
