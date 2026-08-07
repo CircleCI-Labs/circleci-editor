@@ -1,3 +1,4 @@
+import { INSPECTOR_SECTIONS_STORAGE_KEY } from '../src/state/inspectorSectionStore';
 import { expect, test, type Page } from '@playwright/test';
 
 import {
@@ -192,6 +193,24 @@ workflows:
       })
       .first();
     await expect(steps).not.toHaveAttribute('open', '');
+
+    // Wait for the choice to actually be in storage before reloading.
+    //
+    // The assertion above proves the DOM collapsed, which is not the same as
+    // the persisted write having happened: inspectorSectionStore writes to
+    // localStorage, and a reload that beats that write restores the *previous*
+    // state, so the final assertion below finds the section open again. That is
+    // what this spec was failing on intermittently on CI -- a race between the
+    // reload and the write, not a persistence bug, which is why it always
+    // passed when run alone on an unloaded machine.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (key) => window.localStorage.getItem(key),
+          INSPECTOR_SECTIONS_STORAGE_KEY,
+        ),
+      )
+      .toContain('steps');
 
     await page.reload();
     await expect(
