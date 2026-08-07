@@ -207,6 +207,34 @@ function renderFreshRoot(value: Node): string {
  * where a pair's value changed but kept the same container kind, and falling
  * back to a fresh render only for the pair(s) that actually differ.
  */
+/**
+ * Strips one `indent` from `text`'s first line only, leaving every later line
+ * alone.
+ *
+ * The callers of `renderMapChildren`/`renderSeqChildren` splice the old bytes
+ * up to the first child's *key*, which is past that line's indentation -- so
+ * by the time children are rendered, the first child's indentation has already
+ * been emitted. An unchanged first child is spliced verbatim from its key
+ * onward and so fits that convention naturally, but a *regenerated* one comes
+ * from `renderFreshPair`, which indents every line including the first, and
+ * the two indents added up:
+ *
+ *     jobs:
+ *       build:
+ *             executor: other      # 8 spaces, was 4
+ *         steps:
+ *
+ * `serializeMinimalDiff`'s safety net then rejected the splice as a structural
+ * change and re-emitted the whole document, which is why editing the *first*
+ * key of any nested block reflowed every comment in the file while editing the
+ * second key of the same block was fine. That asymmetry is what made this look
+ * like an unrelated flake rather than one bug.
+ */
+function dropFirstLineIndent(text: string, indent: string): string {
+  if (indent === '' || !text.startsWith(indent)) return text;
+  return text.slice(indent.length);
+}
+
 function renderMapChildren(
   oldMap: YAMLMap | undefined,
   newMap: YAMLMap,
@@ -232,6 +260,10 @@ function renderMapChildren(
   });
 
   let cursor = startCursor ?? (hasRange(oldMap) ? oldMap.range[0] : 0);
+  // True when this call begins exactly at the map's own first key, which is
+  // precisely when the caller has already emitted that line's indentation.
+  // See dropFirstLineIndent for what went wrong without this.
+  const indentAlreadyEmitted = startCursor === undefined && hasRange(oldMap);
   const removedOrphans: Pair[] = [];
   const parts: string[] = [];
 
@@ -273,7 +305,8 @@ function renderMapChildren(
     }
   }
 
-  return parts.join('');
+  const out = parts.join('');
+  return indentAlreadyEmitted ? dropFirstLineIndent(out, indent) : out;
 }
 
 /** Looks for an unused removed pair whose *value* (not key) matches `value` -- a rename. */
@@ -377,6 +410,21 @@ function renderMapEntryWithCursor(
   // Value changed kind, or is a leaf scalar with a new value: fresh-render
   // the whole pair. Every *other* pair is untouched, so this is still only a
   // single-pair diff, matching what a targeted edit should look like.
+  //
+  // A scalar whose trailing comment was column-aligned is handled first, so
+  // that editing the value does not collapse the alignment of its own line --
+  // the one region the splice-by-subtree approach cannot protect by leaving
+  // bytes alone, because those bytes are exactly what changed.
+  const alignedScalar = renderScalarPairKeepingCommentColumn(
+    oldPair,
+    newPair,
+    oldText,
+    indent,
+  );
+  if (alignedScalar !== undefined) {
+    return { text: alignedScalar, nextCursor: oldPair.value.range[2] };
+  }
+
   return {
     text: renderFreshPair(newPair.key as Node, newPair.value as Node, indent),
     nextCursor: oldPair.value.range[2],
@@ -392,11 +440,144 @@ function containerHeaderChanged(oldValue: unknown, newValue: unknown): boolean {
   );
 }
 
-/** Offset where this pair's own leading gap (blank line/comment) starts being irrelevant -- i.e. where its key begins. */
+/**
+ * Offset where this pair's own leading gap (blank line/comment) stops and its
+ * key line begins -- including that line's own indentation.
+ *
+ * Including the indentation is the whole point. The caller splices
+ * `oldText.slice(cursor, keyLineStart(...))` verbatim and then asks
+ * `keyAndSeparator` to regenerate the key line *with* `indent`. Returning the
+ * key's own offset instead meant the verbatim slice already carried the line's
+ * leading spaces and `indent` added them a second time, so a renamed key came
+ * out at twice its proper indentation:
+ *
+ *     jobs:
+ *         compile:            # was at 2 spaces, emitted at 4
+ *         docker:             # now a sibling of `compile`, not its child
+ *
+ * That is a structural change, not a cosmetic one, so `serializeMinimalDiff`'s
+ * safety net rejected the whole splice and fell back to re-emitting the entire
+ * document -- which is how renaming one job silently reflowed every comment in
+ * the file. The bug was invisible from the outside precisely because the
+ * safety net was doing its job.
+ *
+ * The walk back covers spaces and tabs only, and only when it reaches the
+ * start of a line. A key preceded by anything else on its line -- `- ` for a
+ * map inside a sequence item, or a flow mapping -- returns the key's own
+ * offset unchanged, so those keep splicing exactly as before rather than
+ * losing the `- ` to a slice that stopped short of it.
+ */
 function keyLineStart(pair: Pair, oldText: string): number {
   const key = pair.key;
-  if (hasRange(key)) return key.range[0];
-  return hasRange(pair.value) ? pair.value.range[0] : oldText.length;
+  const at = hasRange(key)
+    ? key.range[0]
+    : hasRange(pair.value)
+      ? pair.value.range[0]
+      : oldText.length;
+
+  let i = at;
+  while (i > 0 && (oldText[i - 1] === ' ' || oldText[i - 1] === '\t')) i--;
+  return i === 0 || oldText[i - 1] === '\n' ? i : at;
+}
+
+/**
+ * Column of the `#` of a trailing comment sitting on the same line as
+ * `pair`'s scalar value, or undefined if there is no such comment.
+ *
+ * Only whitespace may separate the value from the `#`: anything else means the
+ * `#` is part of the value rather than a comment introducer, and mistaking one
+ * for the other would move text the user wrote into a comment.
+ *
+ * A *single* space does not count. One space is ordinary spacing, not an
+ * alignment the user chose, so holding the `#` at that exact column when the
+ * value gets shorter would insert padding they never wrote -- which is the
+ * same class of unasked-for change this whole module exists to avoid, just in
+ * the opposite direction. Two or more spaces is the signal that the column was
+ * deliberate. An existing orb-version-bump test caught this: bumping
+ * `circleci/slack@99.99.99` to `@4.13.3` is two characters shorter, and column
+ * preservation turned `value # bump me` into `value   # bump me`.
+ */
+function trailingCommentColumn(
+  pair: Pair,
+  oldText: string,
+): { column: number; from: number } | undefined {
+  if (!hasRange(pair.value)) return undefined;
+  const valueEnd = pair.value.range[1];
+  const newline = oldText.indexOf('\n', valueEnd);
+  const lineEnd = newline === -1 ? oldText.length : newline;
+  const rest = oldText.slice(valueEnd, lineEnd);
+  const hash = rest.indexOf('#');
+  if (hash === -1) return undefined;
+  const gap = rest.slice(0, hash);
+  if (!/^[ \t]{2,}$/.test(gap)) return undefined;
+  return { column: columnOf(oldText, valueEnd + hash), from: valueEnd + hash };
+}
+
+/**
+ * Re-renders a pair whose scalar value changed, keeping a trailing comment at
+ * the column it was written at.
+ *
+ * A house style that column-aligns trailing comments is common in CI configs,
+ * and `renderFreshPair` cannot preserve it: `yaml`'s stringify emits exactly
+ * one space before a comment, so editing one value collapsed the alignment of
+ * that line and made the save diff show a change the user did not ask for.
+ *
+ * The comment's *column* is preserved rather than the original run of spaces,
+ * because the point of the style is the column -- reusing the old padding
+ * verbatim would shift the comment by however much the value's length changed
+ * and break the very alignment being protected. When the new value is long
+ * enough to reach or pass the old column there is no alignment left to keep,
+ * so it falls back to a single space, which is what any formatter would do.
+ *
+ * Returns undefined when this does not apply, and the caller fresh-renders as
+ * before.
+ */
+function renderScalarPairKeepingCommentColumn(
+  oldPair: Pair,
+  newPair: Pair,
+  oldText: string,
+  indent: string,
+): string | undefined {
+  if (!isScalar(oldPair.value) || !isScalar(newPair.value)) return undefined;
+  if (!hasRange(oldPair.value)) return undefined;
+  // A changed comment is the user's own edit; only carry an unchanged one.
+  if ((oldPair.value.comment ?? null) !== (newPair.value.comment ?? null))
+    return undefined;
+  if (!keyEqual(oldPair.key, newPair.key)) return undefined;
+
+  const aligned = trailingCommentColumn(oldPair, oldText);
+  if (!aligned) return undefined;
+
+  const colonEnd = hasRange(oldPair.key)
+    ? oldPair.key.range[1] + 1
+    : oldPair.value.range[0];
+  const sep = oldText.slice(colonEnd, oldPair.value.range[0]);
+  // Anything other than same-line spacing (a newline-and-indent separator)
+  // means the comment is not trailing this line in the first place.
+  if (!/^[ \t]*$/.test(sep)) return undefined;
+
+  const rendered = renderFreshValueOnly(newPair.value);
+  if (rendered === undefined) return undefined;
+
+  const head = `${indent}${keyString(newPair.key)}:${sep}${rendered}`;
+  const pad =
+    aligned.column > head.length ? spaces(aligned.column - head.length) : ' ';
+  return head + pad + oldText.slice(aligned.from, oldPair.value.range[2]);
+}
+
+/**
+ * Renders just a scalar's own text, with its comment suppressed so the caller
+ * can place the comment itself. Returns undefined if the scalar would not
+ * render on a single line (a block scalar, or one carrying its own leading
+ * comment), where a trailing-comment column is not a meaningful thing to
+ * preserve.
+ */
+function renderFreshValueOnly(value: Scalar): string | undefined {
+  const clone = new Scalar(value.value);
+  clone.type = value.type;
+  const tmp = new Document(clone);
+  const text = tmp.toString().replace(/\n$/, '');
+  return text.includes('\n') ? undefined : text;
 }
 
 /**

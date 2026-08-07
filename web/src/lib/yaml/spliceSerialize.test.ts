@@ -333,3 +333,112 @@ jobs:
 `);
   });
 });
+
+/**
+ * These pin the two defects that made issue #6 ("the round-trip is not
+ * byte-identical") visible in the save diff. Both were invisible from the
+ * outside because `serializeMinimalDiff`'s safety net caught the malformed
+ * splice and fell back to re-emitting the document -- so the symptom was
+ * never "invalid YAML", it was "every comment in the file moved".
+ */
+describe('serializeMinimalDiff -- issue #6 (editing must not reflow the file)', () => {
+  const NESTED = `version: 2.1
+
+jobs:
+  build:                        # comment on the job key
+    executor: go
+    resource_class: large       # aligned comment
+    steps:
+      - checkout                # aligned comment
+`;
+
+  it('editing the FIRST key of a nested block leaves every other line alone', () => {
+    // The asymmetry that hid this: `executor` is `build`'s first child, so the
+    // parent had already emitted its indentation and the regenerated pair
+    // added it again. Editing `resource_class` -- the second child -- was
+    // always fine, which made this look like an unrelated flake.
+    const after = mutate(NESTED, (doc) => {
+      setIn(doc, ['jobs', 'build', 'executor'], 'other');
+    });
+    expect(after).toContain('    executor: other');
+    expect(after).toContain(
+      '  build:                        # comment on the job key',
+    );
+    expect(after).toContain(
+      '    resource_class: large       # aligned comment',
+    );
+    expect(after).toContain(
+      '      - checkout                # aligned comment',
+    );
+    // Only the edited line may differ.
+    expect(changedLineNumbers(NESTED, after)).toEqual([5]);
+  });
+
+  it('renaming the first key of a nested block keeps its indentation and inline comment', () => {
+    const src = `jobs:\n  build: # compile\n    executor: go\n`;
+    const after = mutate(src, (doc) => {
+      renameKey(doc, ['jobs'], 'build', 'compile');
+    });
+    expect(after).toBe(`jobs:\n  compile: # compile\n    executor: go\n`);
+  });
+
+  it("preserves an aligned trailing comment's column when the value changes", () => {
+    const after = mutate(NESTED, (doc) => {
+      setIn(doc, ['jobs', 'build', 'resource_class'], 'medium');
+    });
+    // `medium` is shorter than `large`, so the comment stays in its column
+    // rather than collapsing to a single space.
+    expect(after).toContain(
+      '    resource_class: medium      # aligned comment',
+    );
+    expect(changedLineNumbers(NESTED, after)).toEqual([6]);
+  });
+
+  it('falls back to a single space when the new value reaches the comment column', () => {
+    // There is no alignment left to preserve once the value is that long, and
+    // padding backwards is not an option -- a single space is what any
+    // formatter would emit.
+    const after = mutate(NESTED, (doc) => {
+      setIn(
+        doc,
+        ['jobs', 'build', 'resource_class'],
+        'a-very-long-resource-class-name',
+      );
+    });
+    expect(after).toContain(
+      '    resource_class: a-very-long-resource-class-name # aligned comment',
+    );
+  });
+
+  it('does not eat the "- " of a map nested in a sequence item', () => {
+    // keyLineStart walks back over indentation only, so a key preceded by
+    // `- ` on its line keeps it: the walk-back stops at the dash rather than
+    // treating it as indentation to be re-emitted.
+    const src = `jobs:\n  build:\n    docker:\n      - image: cimg/go:1.26\n        auth: x\n        other: k\n`;
+    const after = mutate(src, (doc) => {
+      setIn(doc, ['jobs', 'build', 'docker', 0, 'auth'], 'y');
+    });
+    expect(after).toContain('      - image: cimg/go:1.26');
+    expect(after).toContain('        auth: y');
+    expect(after).toContain('        other: k');
+  });
+
+  it('KNOWN GAP: editing inside a sequence item still re-renders that item', () => {
+    // Documented rather than fixed, so the boundary of the two fixes above is
+    // explicit instead of being rediscovered.
+    //
+    // renderSeqChildren diffs items by deep equality and has no "recurse into
+    // a changed item" path, so a modified item is a remove plus an add and is
+    // rendered from scratch -- which collapses aligned comment padding inside
+    // it. Adding recursion needs a way to decide that two sequence items are
+    // "the same item, modified", and sequence items have no keys to match on,
+    // so that is a design question and not a patch. Pre-existing: this output
+    // is byte-identical with and without the fixes in this change.
+    const src = `jobs:\n  build:\n    docker:\n      - image: cimg/go:1.26     # pinned\n        auth: x\n`;
+    const after = mutate(src, (doc) => {
+      setIn(doc, ['jobs', 'build', 'docker', 0, 'auth'], 'y');
+    });
+    expect(after).toContain('- image: cimg/go:1.26 # pinned');
+    expect(after).not.toContain('cimg/go:1.26     # pinned');
+  });
+});
