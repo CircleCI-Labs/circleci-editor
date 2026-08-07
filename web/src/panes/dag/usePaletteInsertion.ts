@@ -20,10 +20,12 @@ import type { GraphNode } from '~/lib/graph/buildGraph';
 import {
   addJobFromExecutor,
   addStep,
+  addWorkflowEntryStep,
   addWorkflowJobEntryContext,
   extractSharedCommand,
   extractSharedExecutor,
   type ExecutorSpec,
+  type WorkflowEntryStepsKey,
 } from '~/lib/mutations/configMutations';
 import { listExecutorNames } from '~/lib/graph/resolveExecutor';
 import { getJobNames } from '~/lib/yaml/documentUtils';
@@ -314,6 +316,35 @@ export function usePaletteInsertion(
     [mutate],
   );
 
+  /**
+   * Handles a palette step dropped at `index` in a workflow entry's
+   * `pre-steps:`/`post-steps:` -- the pre/post-steps counterpart of
+   * `dropStepOnSteps` (issue #21). Addressed by `workflowName`+`nodeId`+`key`
+   * rather than a `jobName`, matching `addWorkflowEntryStep`'s own shape,
+   * since pre/post-steps live on the workflow entry, not the job definition.
+   */
+  const dropStepOnEntrySteps = useCallback(
+    (
+      workflowName: string,
+      nodeId: string,
+      key: WorkflowEntryStepsKey,
+      index: number,
+      stepKey: string,
+    ) => {
+      mutate((d) =>
+        addWorkflowEntryStep(
+          d,
+          workflowName,
+          nodeId,
+          key,
+          defaultStepValue(stepKey),
+          index,
+        ),
+      );
+    },
+    [mutate],
+  );
+
   /** The `JobPicker` "Add" keyboard path for a step card -- always appends. */
   const addStepToJob = useCallback(
     (jobName: string, stepKey: string) => {
@@ -377,6 +408,7 @@ export function usePaletteInsertion(
     dropContextOnJobNode,
     addContextToJobEntry,
     dropStepOnSteps,
+    dropStepOnEntrySteps,
     addStepToJob,
     addCommandToJob,
     extractExecutor,

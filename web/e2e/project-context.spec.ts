@@ -138,6 +138,94 @@ test('the Contexts section lists contexts, shows truncated previews, and adds on
   expect(parsed.jobs.build).not.toHaveProperty('context');
 });
 
+/**
+ * Issue #21: a palette context could already be dropped onto a job node on
+ * the canvas (`JobNode.tsx`'s `onDropContext`) -- but not onto the
+ * inspector's own `Contexts` field, the one control whose entire subject is
+ * contexts and where a user editing them is already standing. That drop had
+ * no unit-level surface of its own to exercise end to end (the field's drop
+ * handler is a same-file addition to `ContextField.tsx`, not a new mutation
+ * -- see that file's module comment), so this is the one place proving it
+ * actually reaches a saved document through the real, built app.
+ *
+ * Driven the same way the empty-steps-list tests in
+ * `inspector-sections-steps.spec.ts` drive a drop target directly: a
+ * synthetic `DragEvent` with a real `DataTransfer`, dispatched on the
+ * field's own drop region. The field's `onAdd` prop is the exact same one
+ * the keyboard/typed path already calls (`addWorkflowJobEntryContext`), so
+ * what this proves beyond the unit tests is that `Inspector`/`ContextField`
+ * are wired up to receive a real cross-pane drag in the first place.
+ */
+test('a palette context dropped on the inspector’s Contexts field is added to that workflow entry, surviving a save', async ({
+  page,
+}) => {
+  const hostApi = await mockHostApi(page);
+  await page.goto('/');
+
+  await expect(
+    page.getByRole('heading', { name: 'Workflow Graph' }),
+  ).toBeVisible();
+  await page
+    .locator('.vce-dag-node')
+    .getByText('build', { exact: true })
+    .click();
+
+  // The Context section starts collapsed for `build`, which has none yet
+  // (issue #219's content rule) -- same click-to-toggle every other
+  // inspector section uses.
+  await page.getByRole('heading', { name: 'Context', exact: true }).click();
+  const contextField = page.getByTestId('context-field-drop-region');
+  await expect(contextField).toBeVisible();
+
+  await contextField.evaluate((el) => {
+    const transfer = new DataTransfer();
+    transfer.setData(
+      'application/x-vce-palette-context',
+      JSON.stringify({ contextName: 'deploy-prod' }),
+    );
+    const rect = el.getBoundingClientRect();
+    const init = {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + 10,
+      clientY: rect.top + rect.height / 2,
+      dataTransfer: transfer,
+    };
+    el.dispatchEvent(new DragEvent('dragover', init));
+    el.dispatchEvent(new DragEvent('drop', init));
+  });
+
+  // The pill appears immediately, in the field the user is standing in.
+  await expect(contextField.getByText('deploy-prod')).toBeVisible();
+
+  const saveButton = page.getByRole('button', {
+    name: 'Review and save config',
+  });
+  await expect(saveButton).toBeEnabled();
+  await saveButton.click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByText('deploy-prod')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Save changes' }).click();
+  await expect.poll(() => hostApi.getSaveCount()).toBeGreaterThan(0);
+
+  const saved = hostApi.getSavedConfig();
+  expect(saved).not.toBeNull();
+  const parsed = parseYaml(saved!) as {
+    workflows: Record<string, { jobs: unknown[] }>;
+    jobs: Record<string, Record<string, unknown>>;
+  };
+  const entries = parsed.workflows.build_test_deploy!.jobs;
+  const buildEntry = entries.find(
+    (entry) => typeof entry === 'object' && entry !== null && 'build' in entry,
+  ) as { build: { context?: string[] } } | undefined;
+
+  expect(buildEntry?.build?.context).toEqual(['deploy-prod']);
+  // Same rule as the palette's own drop onto a job node: `context:` lives on
+  // the workflow entry, never on the job definition.
+  expect(parsed.jobs.build).not.toHaveProperty('context');
+});
+
 test('the Project tab lists env var names and flags dynamic config being off, without a resource-class list', async ({
   page,
 }) => {

@@ -61,6 +61,29 @@
  * buttons. `role="combobox"` with `aria-activedescendant` is what makes the
  * highlight audible to a screen reader rather than only visible.
  *
+ * ## Dragging a context in (issue #21)
+ *
+ * A palette context could already be dropped onto a job node on the canvas
+ * (`JobNode.tsx`'s `onDropContext`) -- the same `addWorkflowJobEntryContext`
+ * mutation this field's own `onAdd` already calls, via
+ * `usePaletteInsertion.dropContextOnJobNode`. What it could not do was land
+ * *here*, in the one field whose entire subject is contexts and where a user
+ * already mid-edit on this exact list is standing. #21 called that the
+ * highest-value missing source×target pair in the whole drag matrix.
+ *
+ * The fix reuses `onAdd` outright rather than adding a second path to the
+ * mutation: a drop is just another way of supplying the name `commit()`
+ * would otherwise take from the input, so `handleDrop` below hands the
+ * dragged name to the exact same prop, with the exact same downstream
+ * mutation, undo entry, and #251 restriction notice. There is deliberately no
+ * extra "is this a valid target" check the way `JobNode`'s `acceptsContextDrop`
+ * has: that rule (no approval entries) exists because a context has nothing to
+ * *run* on an approval step, but the field renders and accepts a *typed* name
+ * for every node kind already (`WorkflowEntryOptionsSection` renders it
+ * unconditionally, issue #37) -- refusing the identical name only when it
+ * arrives by drag would be a distinction this field has never drawn anywhere
+ * else.
+ *
  * ## Discoverability (issue #219)
  *
  * The control was right and invisible. The owner found it by accident, out
@@ -93,10 +116,15 @@ import {
   useMemo,
   useRef,
   useState,
+  type DragEvent,
 } from 'react';
 
 import { Button } from '~/design/components/Button';
 import { Tooltip } from '~/design/components/Tooltip';
+import {
+  isDraggingPaletteContext,
+  readPaletteContextDragPayload,
+} from '~/panes/dag/palette/paletteContexts';
 import {
   contextListCoverage,
   useProjectContextStore,
@@ -225,13 +253,81 @@ export function ContextField({
     }
   };
 
+  // Issue #21: a palette context dragged straight into this field. Whether a
+  // context is currently being dragged over the field -- there is only ever
+  // one answer once that's true (see the module comment on why this field
+  // draws no "wrong kind of node" line the way `JobNode`'s canvas drop
+  // does), so unlike `JobNode.tsx`'s `dragState` this needs no 'invalid' case.
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (!isDraggingPaletteContext(event.dataTransfer)) return;
+    // Accepting the drop is what paints the browser's own "copy" cursor
+    // instead of "not-allowed" -- same `preventDefault()`-is-acceptance rule
+    // as `JobNode`'s `onDragOver` (issue #87).
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setDragOver(true);
+  }, []);
+
+  /**
+   * `dragleave` bubbles, so moving the pointer between two elements *inside*
+   * the field (the label, a pill, the input) would fire this just as much as
+   * actually leaving it -- exactly the blink `StepsSection`'s own
+   * `onRegionDragLeave` documents and fixes for the steps list, reused here
+   * verbatim: `relatedTarget` is the DnD spec's own answer for "what did the
+   * pointer enter", so trust it when the browser provides it, and fall back
+   * to a coordinate check only when it doesn't.
+   */
+  const handleDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const entered = event.relatedTarget;
+    const stillInside =
+      entered instanceof Node
+        ? event.currentTarget.contains(entered)
+        : event.clientX >= rect.left &&
+          event.clientX <= rect.right &&
+          event.clientY >= rect.top &&
+          event.clientY <= rect.bottom;
+    if (!stillInside) setDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      const payload = readPaletteContextDragPayload(event.dataTransfer);
+      setDragOver(false);
+      if (!payload) return;
+      event.preventDefault();
+      // Same prop the typed-input path already calls -- see the module
+      // comment on why a drop is just another way of supplying `commit()`'s
+      // name, not a second route to the mutation.
+      onAdd(payload.contextName);
+    },
+    [onAdd],
+  );
+
   const unrecognisedTooltip = (name: string) =>
     `“${name}” is not among the ${contexts.length} context${
       contexts.length === 1 ? '' : 's'
     } this editor fetched from CircleCI. That may be a typo, a context that does not exist yet, or one in an organization this token cannot read — it is not necessarily wrong.`;
 
   return (
-    <div className="mb-2">
+    <div
+      data-testid="context-field-drop-region"
+      // The drop region is the whole field -- label, pills and input alike --
+      // not just the text input, since a context lands in the list either
+      // way and a user aiming for the pills (where the existing ones already
+      // are) shouldn't have to hit a narrower target than one aiming for the
+      // input.
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`mb-2 rounded-md p-1.5 -m-1.5 transition-colors ${
+        dragOver
+          ? 'bg-[color-mix(in_srgb,var(--color-cc-accent)_14%,transparent)] ring-2 ring-cc-accent'
+          : ''
+      }`}
+    >
       <label
         htmlFor={fieldId}
         className="mb-1 block text-2xs font-medium text-cc-text-muted"

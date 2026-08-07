@@ -20,9 +20,11 @@ import { useCallback, useState } from 'react';
 
 import type { GraphNode } from '~/lib/graph/buildGraph';
 import {
+  insertOrbEntryStep,
   insertOrbJob,
   insertOrbStep,
   setJobExecutorFromOrb,
+  type WorkflowEntryStepsKey,
 } from '~/lib/mutations/configMutations';
 import type { OrbDragPayload } from '~/lib/orbs/dragPayload';
 import { defaultParamValues } from '~/lib/orbs/snippets';
@@ -32,6 +34,13 @@ import { useAppStore } from '~/state/appStore';
 type InsertionTarget =
   | { type: 'workflow'; workflowName: string }
   | { type: 'steps'; jobName: string; index?: number }
+  | {
+      type: 'entrySteps';
+      workflowName: string;
+      nodeId: string;
+      key: WorkflowEntryStepsKey;
+      index?: number;
+    }
   | { type: 'executor'; jobName: string };
 
 interface PendingInsertion {
@@ -89,6 +98,19 @@ export function useOrbInsertion(activeWorkflow: string | undefined) {
           mutate((doc) =>
             insertOrbStep(doc, {
               jobName: target.jobName,
+              orbRef,
+              commandName: element.name,
+              params: values,
+              index: target.index,
+            }),
+          );
+          return;
+        case 'entrySteps':
+          mutate((doc) =>
+            insertOrbEntryStep(doc, {
+              workflowName: target.workflowName,
+              nodeId: target.nodeId,
+              key: target.key,
               orbRef,
               commandName: element.name,
               params: values,
@@ -166,6 +188,35 @@ export function useOrbInsertion(activeWorkflow: string | undefined) {
     [beginInsertion],
   );
 
+  /**
+   * Drop of an orb command onto a workflow entry's `pre-steps:`/
+   * `post-steps:`, optionally at `index` -- the pre/post-steps counterpart
+   * of `insertCommand` (issue #21). No programmatic/keyboard equivalent yet:
+   * unlike a job's own steps, there is no `JobPicker`-style control that
+   * targets "this workflow entry's pre-steps" the way `PaletteCommandSection`
+   * targets a job, so this path is drag-only for now -- see the PR
+   * description for what that would take.
+   */
+  const insertEntryCommand = useCallback(
+    (
+      orbRef: string,
+      element: OrbElement,
+      workflowName: string,
+      nodeId: string,
+      key: WorkflowEntryStepsKey,
+      index?: number,
+    ) => {
+      beginInsertion(orbRef, element, {
+        type: 'entrySteps',
+        workflowName,
+        nodeId,
+        key,
+        index,
+      });
+    },
+    [beginInsertion],
+  );
+
   /** Drop (or programmatic add) of an orb executor onto `jobName`. */
   const insertExecutor = useCallback(
     (orbRef: string, element: OrbElement, jobName: string) => {
@@ -230,6 +281,40 @@ export function useOrbInsertion(activeWorkflow: string | undefined) {
     [insertCommand, refuse],
   );
 
+  /**
+   * Handles a drop of `payload` at `index` in a workflow entry's
+   * `pre-steps:`/`post-steps:` (the inspector's own drop target, issue #21).
+   * Mirrors `dropOnSteps` exactly -- same refusal for anything that isn't a
+   * command -- just addressed by `workflowName`+`nodeId`+`key` instead of a
+   * `jobName`, since pre/post-steps belong to the workflow entry rather than
+   * the job definition.
+   */
+  const dropOnEntrySteps = useCallback(
+    (
+      workflowName: string,
+      nodeId: string,
+      key: WorkflowEntryStepsKey,
+      index: number,
+      payload: OrbDragPayload,
+    ) => {
+      if (payload.kind !== 'command') {
+        refuse(
+          `Drop "${payload.element.name}" onto ${payload.kind === 'job' ? 'the canvas' : 'a job node'} instead -- ${key === 'pre-steps' ? 'pre-steps' : 'post-steps'} only accepts orb commands.`,
+        );
+        return;
+      }
+      insertEntryCommand(
+        payload.orbRef,
+        payload.element,
+        workflowName,
+        nodeId,
+        key,
+        index,
+      );
+    },
+    [insertEntryCommand, refuse],
+  );
+
   return {
     /** The element awaiting required-parameter input, or `null` when no dialog should show. */
     pendingElement: pending?.element ?? null,
@@ -238,8 +323,10 @@ export function useOrbInsertion(activeWorkflow: string | undefined) {
     dropOnCanvas,
     dropOnJobNode,
     dropOnSteps,
+    dropOnEntrySteps,
     insertJob,
     insertCommand,
+    insertEntryCommand,
     insertExecutor,
   };
 }

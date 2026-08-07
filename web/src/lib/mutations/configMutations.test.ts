@@ -15,6 +15,7 @@ import {
   deleteJob,
   extractSharedCommand,
   extractSharedExecutor,
+  insertOrbEntryStep,
   insertOrbJob,
   insertOrbStep,
   moveStep,
@@ -1020,6 +1021,110 @@ describe('addOrb / insertOrbJob / insertOrbStep / setJobExecutorFromOrb', () => 
     });
   });
 
+  /**
+   * Issue #21: the pre-steps/post-steps counterpart of `insertOrbStep`,
+   * needed because dropping an orb command onto those lists had no mutation
+   * to call even after the inspector's own drop target was wired up --
+   * `moveWorkflowEntryStep`/`removeWorkflowEntryStep` already worked there,
+   * only landing a *new* command did not.
+   */
+  describe('insertOrbEntryStep', () => {
+    it('adds the orb and the step, promoting a bare-string entry to map form', () => {
+      const doc = parse();
+      insertOrbEntryStep(doc, {
+        workflowName: WORKFLOW,
+        nodeId: 'build',
+        key: 'pre-steps',
+        orbRef: 'circleci/slack@4.12.0',
+        commandName: 'notify',
+        params: { event: 'fail' },
+      });
+
+      expect(getIn(doc, ['orbs', 'slack'])).toBe('circleci/slack@4.12.0');
+      expect(getIn(doc, ['workflows', WORKFLOW, 'jobs', 0])).toEqual({
+        build: { 'pre-steps': [{ 'slack/notify': { event: 'fail' } }] },
+      });
+    });
+
+    it('inserts into post-steps at an index, on an entry already in map form, leaving requires: untouched', () => {
+      const doc = parse();
+      insertOrbEntryStep(doc, {
+        workflowName: WORKFLOW,
+        nodeId: 'deploy',
+        key: 'post-steps',
+        orbRef: 'circleci/node@5.2.0',
+        commandName: 'notify',
+      });
+
+      expect(
+        getIn(doc, ['workflows', WORKFLOW, 'jobs', 3, 'deploy', 'post-steps']),
+      ).toEqual(['node/notify']);
+      expect(
+        getIn(doc, ['workflows', WORKFLOW, 'jobs', 3, 'deploy', 'requires']),
+      ).toEqual(['test-linux', 'test-macos']);
+    });
+
+    it('imports the orb only once across repeated drops, same as insertOrbStep', () => {
+      const doc = parse();
+      insertOrbEntryStep(doc, {
+        workflowName: WORKFLOW,
+        nodeId: 'build',
+        key: 'pre-steps',
+        orbRef: 'circleci/slack@4.12.0',
+        commandName: 'notify',
+      });
+      insertOrbEntryStep(doc, {
+        workflowName: WORKFLOW,
+        nodeId: 'build',
+        key: 'pre-steps',
+        orbRef: 'circleci/slack@4.12.0',
+        commandName: 'notify',
+      });
+
+      expect(getIn(doc, ['orbs'])).toEqual({
+        node: 'circleci/node@5.2.0',
+        slack: 'circleci/slack@4.12.0',
+      });
+    });
+
+    /**
+     * The acceptance criterion for #21: a drop must be a surgical edit, not a
+     * reformat. `deploy` is already in map form with its own `requires:` and
+     * every job/workflow comment in the fixture aligned around it -- inserting
+     * a `post-steps:` entry must add exactly those two lines and disturb
+     * nothing else, comments included.
+     */
+    it('is a minimal-diff edit that preserves every comment', () => {
+      const doc = parse();
+      const before = doc.toString();
+
+      insertOrbEntryStep(doc, {
+        workflowName: WORKFLOW,
+        nodeId: 'deploy',
+        key: 'post-steps',
+        orbRef: 'circleci/node@5.2.0',
+        commandName: 'notify',
+      });
+
+      const after = doc.toString();
+      const { additions, deletions } = countChangedLines(
+        unifiedDiff(before, after, 'config.yml'),
+      );
+      // `node:` is already imported and `deploy` is already a map entry, so
+      // only the new `post-steps:` key and its one item are added.
+      expect(additions).toBe(2);
+      expect(deletions).toBe(0);
+
+      expect(after).toContain(
+        '# This config builds, tests, and deploys the widgets service.',
+      );
+      expect(after).toContain('# Owned by #platform-eng.');
+      expect(after).toContain('# cleanup after tests');
+      expect(after).toContain('# Deploy jobs');
+      expect(after).toContain('# These only run against main.');
+    });
+  });
+
   it('setJobExecutorFromOrb sets executor and imports the orb', () => {
     const doc = parse();
     setJobExecutorFromOrb(doc, {
@@ -1559,6 +1664,39 @@ describe('addWorkflowEntryStep / removeWorkflowEntryStep / moveWorkflowEntryStep
     expect(() =>
       removeWorkflowEntryStep(doc, WORKFLOW, 'build', 'pre-steps', 0),
     ).toThrow(/has no "pre-steps"/);
+  });
+
+  /**
+   * Issue #21: the mutation a palette step dropped into pre-steps/post-steps
+   * actually calls (via `usePaletteInsertion.dropStepOnEntrySteps`). `deploy`
+   * is already map form with `requires:` and a fixture full of comments --
+   * this pins that inserting a step there is exactly as surgical as
+   * `addStep`'s own equivalent test for a job's body.
+   */
+  it('is a minimal-diff edit that preserves every comment', () => {
+    const doc = parse();
+    const before = doc.toString();
+
+    addWorkflowEntryStep(doc, WORKFLOW, 'deploy', 'pre-steps', 'checkout');
+
+    const after = doc.toString();
+    const { additions, deletions } = countChangedLines(
+      unifiedDiff(before, after, 'config.yml'),
+    );
+    // Just the new `pre-steps:` key and its one item.
+    expect(additions).toBe(2);
+    expect(deletions).toBe(0);
+
+    expect(after).toContain(
+      '# This config builds, tests, and deploys the widgets service.',
+    );
+    expect(after).toContain('# Owned by #platform-eng.');
+    expect(after).toContain('# cleanup after tests');
+    expect(after).toContain('# Deploy jobs');
+    expect(after).toContain('# These only run against main.');
+    expect(
+      getIn(doc, ['workflows', WORKFLOW, 'jobs', 3, 'deploy', 'requires']),
+    ).toEqual(['test-linux', 'test-macos']);
   });
 });
 

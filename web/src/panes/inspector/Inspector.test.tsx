@@ -603,6 +603,189 @@ workflows:
     });
   });
 
+  /**
+   * Issue #21: pre-steps/post-steps are rendered by the same `StepsSection`
+   * as a job's own body, so reorder-by-drag and the "Add a run step" form
+   * already worked there -- what was missing was landing a *new* command or
+   * palette step, because `Inspector` never threaded a drop handler down to
+   * those two sections at all (see the module doc this closes). These mirror
+   * the "orb command drop target" describe above and
+   * "dropping onto an empty steps list" below, just addressed at
+   * `workflowName`+`nodeId`+`key` instead of `jobName`.
+   */
+  describe('pre-steps/post-steps drop targets (issue #21)', () => {
+    const COMMAND_PAYLOAD = {
+      kind: 'command' as const,
+      orbRef: 'circleci/node@5.2.0',
+      element: {
+        name: 'install-packages',
+        kind: 'command' as const,
+        parameters: [],
+      },
+    };
+
+    function orbCommandTransfer(): DataTransfer {
+      return {
+        types: ['application/x-vce-orb-command'],
+        getData: (type: string) =>
+          type === 'application/x-vce-orb-command'
+            ? JSON.stringify(COMMAND_PAYLOAD)
+            : '',
+        setData: () => {},
+      } as unknown as DataTransfer;
+    }
+
+    function paletteStepTransfer(stepKey: string): DataTransfer {
+      return {
+        types: ['application/x-vce-palette-step'],
+        getData: (type: string) =>
+          type === 'application/x-vce-palette-step'
+            ? JSON.stringify({ stepKey })
+            : '',
+        setData: () => {},
+      } as unknown as DataTransfer;
+    }
+
+    it('dropping an orb command onto an empty Pre-steps list calls onDropOrbCommandOnEntrySteps with the workflow entry, not a jobName', () => {
+      const { doc, node } = setup(SIMPLE_JOB_YAML, 'build');
+      const onDropOrbCommandOnEntrySteps =
+        vi.fn<
+          (
+            workflowName: string,
+            nodeId: string,
+            key: string,
+            index: number,
+            payload: unknown,
+          ) => void
+        >();
+      render(
+        <Inspector
+          doc={doc}
+          workflowName="main"
+          node={node}
+          onRequestDelete={() => {}}
+          autoFocusName={false}
+          onDropOrbCommandOnEntrySteps={onDropOrbCommandOnEntrySteps}
+        />,
+      );
+
+      const region = stepDropRegion('Pre-steps');
+      const emptyState = within(region).getByText(/no pre-steps yet/i);
+      const dataTransfer = orbCommandTransfer();
+      fireDragAt('dragOver', emptyState, { dataTransfer, clientY: 0 });
+      fireDragAt('drop', emptyState, { dataTransfer, clientY: 0 });
+
+      expect(onDropOrbCommandOnEntrySteps).toHaveBeenCalledWith(
+        'main',
+        'build',
+        'pre-steps',
+        0,
+        COMMAND_PAYLOAD,
+      );
+    });
+
+    it('dropping a palette step onto an empty Post-steps list calls onDropPaletteStepOnEntrySteps with "post-steps"', () => {
+      const { doc, node } = setup(SIMPLE_JOB_YAML, 'build');
+      const onDropPaletteStepOnEntrySteps =
+        vi.fn<
+          (
+            workflowName: string,
+            nodeId: string,
+            key: string,
+            index: number,
+            stepKey: string,
+          ) => void
+        >();
+      render(
+        <Inspector
+          doc={doc}
+          workflowName="main"
+          node={node}
+          onRequestDelete={() => {}}
+          autoFocusName={false}
+          onDropPaletteStepOnEntrySteps={onDropPaletteStepOnEntrySteps}
+        />,
+      );
+
+      const region = stepDropRegion('Post-steps');
+      const emptyState = within(region).getByText(/no post-steps yet/i);
+      const dataTransfer = paletteStepTransfer('checkout');
+      fireDragAt('dragOver', emptyState, { dataTransfer, clientY: 0 });
+      fireDragAt('drop', emptyState, { dataTransfer, clientY: 0 });
+
+      expect(onDropPaletteStepOnEntrySteps).toHaveBeenCalledWith(
+        'main',
+        'build',
+        'post-steps',
+        0,
+        'checkout',
+      );
+    });
+
+    it('without the entry-steps handlers, Pre-steps/Post-steps refuse the drop exactly like before -- no crash, no silent no-drop-cursor regression', () => {
+      const { doc, node } = setup(SIMPLE_JOB_YAML, 'build');
+      render(
+        <Inspector
+          doc={doc}
+          workflowName="main"
+          node={node}
+          onRequestDelete={() => {}}
+          autoFocusName={false}
+        />,
+      );
+
+      const region = stepDropRegion('Pre-steps');
+      const emptyState = within(region).getByText(/no pre-steps yet/i);
+      const dataTransfer = orbCommandTransfer();
+      const dragOverEvent = fireDragAt('dragOver', emptyState, {
+        dataTransfer,
+        clientY: 0,
+      });
+      expect(dragOverEvent.defaultPrevented).toBe(false);
+      expect(dataTransfer.dropEffect).toBe('none');
+    });
+
+    it("dropping onto Steps still only calls the job-body handler, never the entry-steps one (the two drop targets don't cross-fire)", () => {
+      const { doc, node } = setup(SIMPLE_JOB_YAML, 'build');
+      const onDropOrbCommand =
+        vi.fn<(jobName: string, index: number, payload: unknown) => void>();
+      const onDropOrbCommandOnEntrySteps =
+        vi.fn<
+          (
+            workflowName: string,
+            nodeId: string,
+            key: string,
+            index: number,
+            payload: unknown,
+          ) => void
+        >();
+      render(
+        <Inspector
+          doc={doc}
+          workflowName="main"
+          node={node}
+          onRequestDelete={() => {}}
+          autoFocusName={false}
+          onDropOrbCommand={onDropOrbCommand}
+          onDropOrbCommandOnEntrySteps={onDropOrbCommandOnEntrySteps}
+        />,
+      );
+
+      const region = stepDropRegion('Steps');
+      stubStepListGeometry(region);
+      const dataTransfer = orbCommandTransfer();
+      fireDragAt('dragOver', region, { dataTransfer, clientY: 4 });
+      fireDragAt('drop', region, { dataTransfer, clientY: 4 });
+
+      expect(onDropOrbCommand).toHaveBeenCalledWith(
+        'build',
+        0,
+        COMMAND_PAYLOAD,
+      );
+      expect(onDropOrbCommandOnEntrySteps).not.toHaveBeenCalled();
+    });
+  });
+
   describe('step kinds (issue #28)', () => {
     const REAL_WORLD_YAML = `
 jobs:

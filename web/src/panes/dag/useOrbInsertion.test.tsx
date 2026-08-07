@@ -213,4 +213,47 @@ describe('useOrbInsertion', () => {
     expect(getIn(doc, ['jobs', 'build', 'steps', 0])).toBe('node/test');
     expect(getIn(doc, ['jobs', 'build', 'steps', 1])).toBe('checkout');
   });
+
+  /**
+   * Issue #21: the pre-steps/post-steps counterpart of `dropOnSteps` above --
+   * same drag payload, addressed at a workflow entry instead of a job.
+   */
+  it('dropOnEntrySteps inserts an orb command at the given index in a workflow entry’s pre-steps', () => {
+    const { result } = renderHook(() => useOrbInsertion('main'));
+
+    act(() => {
+      result.current.dropOnEntrySteps('main', 'deploy', 'pre-steps', 0, {
+        kind: 'command',
+        orbRef: 'circleci/node@5.2.0',
+        element: { ...NO_PARAMS_JOB, kind: 'command' },
+      });
+    });
+
+    const doc = useAppStore.getState().doc!;
+    expect(
+      getIn(doc, ['workflows', 'main', 'jobs', 2, 'deploy', 'pre-steps', 0]),
+    ).toBe('node/test');
+    // The sibling `requires:` -- deploy's only other option -- is untouched.
+    expect(
+      getIn(doc, ['workflows', 'main', 'jobs', 2, 'deploy', 'requires']),
+    ).toEqual(['build']);
+  });
+
+  it('dropOnEntrySteps refuses anything other than a command, without mutating the document', () => {
+    const { result } = renderHook(() => useOrbInsertion('main'));
+    const textBefore = useAppStore.getState().text;
+
+    act(() => {
+      result.current.dropOnEntrySteps('main', 'deploy', 'post-steps', 0, {
+        kind: 'job',
+        orbRef: 'circleci/node@5.2.0',
+        element: NO_PARAMS_JOB,
+      });
+    });
+
+    expect(useAppStore.getState().text).toBe(textBefore);
+    expect(useAppStore.getState().editError).toMatch(
+      /only accepts orb commands/i,
+    );
+  });
 });
