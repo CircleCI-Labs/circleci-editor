@@ -45,6 +45,7 @@ import {
   goToLine,
   type DiagnosticMark,
 } from './diagnosticLines';
+import { diagnosticUnderline, type UnderlineMark } from './diagnosticUnderline';
 import { buildEditorTheme } from './editorTheme';
 import { SaveDialog } from './SaveDialog';
 import { reopenCompletionOnDelete } from './reopenCompletionOnDelete';
@@ -440,6 +441,51 @@ export function YamlPane() {
     [diagnosticsResult, diagnosticIndex, policyDiagnostics],
   );
 
+  // Issue #9: the same two diagnostic lists `diagnosticMarks` above already
+  // walks, filtered down to the ones with a real span to underline. A
+  // location's `endLine`/`endColumn` are only ever set by `locate.ts`'s
+  // `locateNode` when a document node was actually found and measured (see
+  // `DiagnosticLocation`'s own doc comment) -- an unplaced diagnostic, or a
+  // `'reported'` YAML-parse-error location (a bare point, never a span),
+  // simply has no `endColumn` and is filtered out here, exactly as #163
+  // requires: no location resolved means no mark drawn, never a guess.
+  const underlineMarks = useMemo<UnderlineMark[]>(
+    () => [
+      ...diagnosticsResult.diagnostics.flatMap((diagnostic, index) => {
+        const location = diagnostic.location;
+        if (location?.endColumn === undefined) return [];
+        return [
+          {
+            line: location.line,
+            column: location.column,
+            endColumn: location.endColumn,
+            severity: diagnostic.severity,
+            primary: index === diagnosticIndex,
+            message: diagnostic.title,
+          },
+        ];
+      }),
+      // Same "never the primary compile diagnostic" rule `diagnosticMarks`
+      // already applies to a policy violation's line tint, kept consistent
+      // here for the same reason.
+      ...policyDiagnostics.flatMap((diagnostic) => {
+        const location = diagnostic.location;
+        if (location?.endColumn === undefined) return [];
+        return [
+          {
+            line: location.line,
+            column: location.column,
+            endColumn: location.endColumn,
+            severity: diagnostic.severity,
+            primary: false,
+            message: diagnosticHeadline(diagnostic),
+          },
+        ];
+      }),
+    ],
+    [diagnosticsResult, diagnosticIndex, policyDiagnostics],
+  );
+
   const handleGoToLine = useCallback((line: number, column: number) => {
     const view = viewRef.current;
     if (view) goToLine(view, line, column);
@@ -482,8 +528,12 @@ export function YamlPane() {
       // on. Rebuilt when the mark set changes -- the same "recreate the
       // extension array" pattern this memo already uses for the theme.
       diagnosticLineHighlight(diagnosticMarks),
+      // Issue #9: underlines the exact span within that line, additively --
+      // see `diagnosticUnderline.ts`'s own doc comment for why this doesn't
+      // replace the line tint above.
+      diagnosticUnderline(underlineMarks),
     ];
-  }, [circleciSchema, resolvedTheme, diagnosticMarks]);
+  }, [circleciSchema, resolvedTheme, diagnosticMarks, underlineMarks]);
 
   // The compiled view's own extension set: syntax highlighting for
   // readability, but deliberately no completion source -- `readOnly` on

@@ -247,3 +247,84 @@ jobs:
     expect(locate(SCHEMA_EXTRANEOUS_KEY, config)).toBeUndefined();
   });
 });
+
+/**
+ * Issue #9: the width half of a resolved location, `endLine`/`endColumn` --
+ * what the inline squiggle actually needs beyond the point `line`/`column`
+ * already gave every other consumer (`LocationButton`'s jump, the line
+ * tint). Exercised directly against `locateTarget` (rather than through
+ * `locate()`'s message-parsing helper above) so a target can be handed in by
+ * hand, including the "cannot resolve at all" case the rest of this suite
+ * already covers for `line`/`column` but not yet explicitly for the range.
+ */
+describe('locateTarget: resolved ranges (issue #9)', () => {
+  it('measures the exact width of the resolved key, not the rest of the line', () => {
+    const config = `version: 2.1
+jobs:
+  build:
+    docker: [{ image: cimg/base:stable }]
+    stpes:
+      - checkout
+`;
+    const { doc } = parseConfig(config);
+    const location = locateTarget(doc, config, {
+      kind: 'schemaPath',
+      path: ['jobs', 'build'],
+      key: 'stpes',
+    });
+    const line = lineOf(config, 'stpes:');
+    const column = config.split('\n')[line - 1]?.indexOf('stpes') ?? -1;
+    // 0-based `indexOf` + 1 is the 1-based column `offsetToPosition` reports.
+    expect(location).toEqual({
+      line,
+      column: column + 1,
+      basis: 'resolved',
+      endLine: line,
+      // "stpes" is 5 characters -- the squiggle stops at the key, not at
+      // the colon or anything after it.
+      endColumn: column + 1 + 'stpes'.length,
+    });
+  });
+
+  it("clips a multi-line node's span to its start line rather than carrying the real end through", () => {
+    // A `schemaPath` target with no `key` resolves to the *value* node at
+    // that path -- here, the entire multi-line `build` job map (`docker:`
+    // through the end of `steps:`), not the `build:` key line itself; `yaml`
+    // gives a mapping's value node a range starting at its first child
+    // (`docker:`, on line 4 of this fixture). The node's real end is on line
+    // 7 (one past the last line, per `yaml`'s own trailing-newline
+    // convention) -- `DiagnosticLocation.endLine`'s doc comment is why this
+    // doesn't carry that through: an inline squiggle is drawn as a
+    // single-line CodeMirror mark, so this clips back to the *start* line
+    // instead.
+    const config = `version: 2.1
+jobs:
+  build:
+    docker: [{ image: cimg/base:stable }]
+    steps:
+      - checkout
+`;
+    const { doc } = parseConfig(config);
+    const location = locateTarget(doc, config, {
+      kind: 'schemaPath',
+      path: ['jobs', 'build'],
+    });
+    expect(location?.line).toBe(4); // `docker:`, the map's first child
+    expect(location?.endLine).toBe(location?.line);
+    // Clipped to the end of line 4, not to line 7 where the map's real
+    // (multi-line) range actually ends.
+    expect(location?.endColumn).toBe(
+      '    docker: [{ image: cimg/base:stable }]'.length + 1,
+    );
+  });
+
+  it('resolves to no location at all -- not a location with no end -- when the path is not in the document', () => {
+    const config = 'version: 2.1\njobs:\n  build:\n    steps: [checkout]\n';
+    const { doc } = parseConfig(config);
+    const location = locateTarget(doc, config, {
+      kind: 'schemaPath',
+      path: ['jobs', 'nonexistent'],
+    });
+    expect(location).toBeUndefined();
+  });
+});

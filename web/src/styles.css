@@ -1449,6 +1449,51 @@
   );
 }
 
+/*
+ * Issue #9: the inline squiggle under the exact span a diagnostic resolved
+ * to, drawn by `panes/yaml/diagnosticUnderline.ts`. A `text-decoration`, not
+ * a border or background -- unlike `.vce-diagnostic-line` above, this sits
+ * *inline* with syntax-highlighted text of varying width, and only a
+ * decoration line renders correctly under text without shifting layout or
+ * fighting the token's own background.
+ *
+ * `--color-cc-danger`/`--color-cc-warning` at full strength, not the 12/60%
+ * washes `.vce-diagnostic-line` uses for its background+border -- those
+ * washes exist so a whole-line fill doesn't cost the code on that line its
+ * own contrast, which doesn't apply to a 1-2px line drawn *under* the glyphs
+ * rather than behind them. Both tokens are already measured for text-level
+ * contrast elsewhere in this file (search "5.66:1" / "6.17:1"), and a
+ * non-text indicator's WCAG 1.4.11 floor (3:1) is lower than the text floor
+ * both already clear.
+ *
+ * The two severities differ in *style*, not only in hue -- wavy vs. dashed --
+ * so they stay distinguishable under grayscale/colour-blind emulation, the
+ * same "don't rely on colour alone" standard `ValidationBadge`'s icon+text
+ * pairing and the DAG canvas's ring+label (`vce-dag-error-label`) already
+ * hold themselves to.
+ */
+.vce-diagnostic-underline--error {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--color-cc-danger);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+.vce-diagnostic-underline--warning {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-color: var(--color-cc-warning);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+/* The one the strip is currently showing -- thicker, mirroring
+   `.vce-diagnostic-line--primary`'s own darker tint for the same problem. */
+.vce-diagnostic-underline--primary {
+  text-decoration-thickness: 2.5px;
+}
+
 .react-flow__controls {
   border: 1px solid var(--color-cc-border);
   border-radius: var(--radius); /* issue #69 -- was a hardcoded 8px */
