@@ -36,11 +36,14 @@
  * "do it for me" button. The fifth, resource-utilisation right-sizing
  * (issue #307, reversing #292's own earlier rejection -- see
  * `detectResourceUtilization.ts`), is *conditionally* actionable: it only
- * offers a "move to X" button once issue #305's offerings cache confirms X
- * actually exists for this job's platform, which cannot answer this on its own as of this
- * writing -- until then it is information only, like the matrix candidate,
- * for the same reason: a button that might not work is worse than no
- * button.
+ * offers a "move to X" button once `resourceClassCatalog.ts` (issue #8) has
+ * confirmed X is a real class one size up or down from the job's current
+ * one, ranked from CircleCI's own vendored resource tables -- never from
+ * issue #305's offerings cache, which carries no size information at all
+ * (see that module's own doc comment). When the tables cannot say -- an
+ * unrecognised class, or the response not having loaded yet -- this still
+ * renders as information only, like the matrix candidate, for the same
+ * reason: a button that might not work is worse than no button.
  */
 import { useEffect, useId, useMemo, useState } from 'react';
 import type { Document } from 'yaml';
@@ -74,6 +77,8 @@ import { addCacheFallbackKey } from '~/lib/mutations/cacheFallbackMutations';
 import { extractImageTagToParameter } from '~/lib/mutations/imageParameterMutations';
 import { bumpOrbVersion } from '~/lib/mutations/orbBumpMutation';
 import { setResourceClass } from '~/lib/mutations/resourceClassMutations';
+import { createResourceClassCatalog } from '~/lib/resourceClasses/resourceClassCatalog';
+import { useResourceClasses } from '~/lib/resourceClasses/useResourceClasses';
 import type { UsageStatus } from '~/lib/rpc/client';
 import { listKeys } from '~/lib/yaml/documentUtils';
 import { useOrbStore } from '~/state/orbStore';
@@ -363,10 +368,23 @@ function UtilizationSuggestionCard({
       ? `${jobRef} averaged ${finding.metricPct.toFixed(0)}% median CPU on ${finding.resourceClass}`
       : `${jobRef} peaked at ${finding.metricPct.toFixed(0)}% RAM on ${finding.resourceClass}`;
 
+  // Naming a class (once `finding.suggestedClass` is populated) is phrased as
+  // what utilisation *suggests*, never as an instruction to move -- issue #8's
+  // own explicit rule. Resource-class access depends on the org's CircleCI
+  // plan and its Cloud/Server tier, which this component has no way to know,
+  // so a suggestion that happened to name a class the reader cannot actually
+  // select would be a confident wrong answer -- worse than the unnamed form
+  // below it falls back to when no catalog match exists. The plan-dependence
+  // sentence is only added when a class *is* named; the unnamed branches
+  // already make no claim about availability to hedge.
   const body =
     finding.kind === 'low-cpu'
-      ? `Consider ${finding.suggestedClass ? `moving ${jobRef} to ${finding.suggestedClass}` : `a smaller resource class for ${jobRef}`} because it stayed under ${LOW_CPU_THRESHOLD_PCT}% median CPU across ${window} on ${finding.resourceClass}, which suggests it isn't using the compute it's paying for -- though an I/O-bound job can look the same way and would be no faster on a smaller class, so check what it's actually waiting on before assuming this one is oversized.`
-      : `Consider ${finding.suggestedClass ? `moving ${jobRef} to ${finding.suggestedClass}` : `a resource class with more memory for ${jobRef}`} because its worst run reached ${finding.metricPct.toFixed(0)}% RAM utilisation across ${window} on ${finding.resourceClass}, which is close to the ceiling -- a run that close is more likely to fail outright with an out-of-memory error than to simply be inefficient.`;
+      ? finding.suggestedClass
+        ? `${jobRef} stayed under ${LOW_CPU_THRESHOLD_PCT}% median CPU across ${window} on ${finding.resourceClass}, and utilisation suggests \`${finding.suggestedClass}\` would be enough -- though an I/O-bound job can look the same way and would be no faster on a smaller class, so check what it's actually waiting on before assuming this one is oversized. Whether \`${finding.suggestedClass}\` is actually available depends on your CircleCI plan and Cloud/Server tier, so this names a target to check, not an instruction.`
+        : `Consider a smaller resource class for ${jobRef} because it stayed under ${LOW_CPU_THRESHOLD_PCT}% median CPU across ${window} on ${finding.resourceClass}, which suggests it isn't using the compute it's paying for -- though an I/O-bound job can look the same way and would be no faster on a smaller class, so check what it's actually waiting on before assuming this one is oversized.`
+      : finding.suggestedClass
+        ? `${jobRef}'s worst run reached ${finding.metricPct.toFixed(0)}% RAM utilisation across ${window} on ${finding.resourceClass}, which is close to the ceiling -- a run that close is more likely to fail outright with an out-of-memory error than to simply be inefficient. Utilisation suggests \`${finding.suggestedClass}\` would give it headroom, though whether it's actually available depends on your CircleCI plan and Cloud/Server tier, so this names a target to check, not an instruction.`
+        : `Consider a resource class with more memory for ${jobRef} because its worst run reached ${finding.metricPct.toFixed(0)}% RAM utilisation across ${window} on ${finding.resourceClass}, which is close to the ceiling -- a run that close is more likely to fail outright with an out-of-memory error than to simply be inefficient.`;
 
   return (
     <RecommendationCard
@@ -492,6 +510,19 @@ export function RecommendationsSection({
     ensureUsageFetched();
   }, [ensureUsageFetched]);
 
+  // `undefined` while the shared, session-cached `/api/resource-classes`
+  // fetch is in flight (see `useResourceClasses`'s own doc comment) -- every
+  // finding below still fires in that window, just with no `suggestedClass`,
+  // the same honest-degradation path a table the host cannot parse takes.
+  const resourceClasses = useResourceClasses();
+  const resourceClassCatalog = useMemo(
+    () =>
+      resourceClasses
+        ? createResourceClassCatalog(resourceClasses.environments)
+        : undefined,
+    [resourceClasses],
+  );
+
   const suggestions = useMemo<Suggestion[]>(() => {
     if (!doc) return [];
     return [
@@ -523,12 +554,16 @@ export function RecommendationsSection({
           group,
         }),
       ),
-      // No `catalog` argument: issue #305's offerings cache (which of these
-      // resource classes actually exist per platform) cannot answer this on its own as of
-      // this writing -- see detectResourceUtilization.ts's own doc comment.
-      // Every finding still fires, just with no `suggestedClass`, which is
-      // why `UtilizationSuggestionCard` renders no action button yet.
-      ...findResourceUtilizationFindings(doc, usageJobs, usageWindowDays).map(
+      // `resourceClassCatalog` (issue #8) is what lets a finding populate
+      // `suggestedClass` at all -- see this component's own doc comment on
+      // why that catalog is the vendored resource tables, ranked by their
+      // own vCPU/RAM columns, and not issue #305's offerings cache.
+      ...findResourceUtilizationFindings(
+        doc,
+        usageJobs,
+        usageWindowDays,
+        resourceClassCatalog,
+      ).map(
         (finding): Suggestion => ({
           kind: 'utilization',
           key: `utilization:${finding.kind}:${finding.jobName}:${finding.resourceClass}`,
@@ -536,7 +571,7 @@ export function RecommendationsSection({
         }),
       ),
     ];
-  }, [doc, orbVersionsCache, usageJobs, usageWindowDays]);
+  }, [doc, orbVersionsCache, usageJobs, usageWindowDays, resourceClassCatalog]);
 
   const visible = suggestions.filter((s) => !dismissed.has(s.key));
   if (!doc || visible.length === 0) return null;

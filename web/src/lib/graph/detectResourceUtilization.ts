@@ -35,12 +35,11 @@
  * **Never suggests a move to a resource class that does not exist.**
  * `catalog`, when supplied, is asked whether a smaller/larger class
  * actually exists for this job's platform before `suggestedClass` is ever
- * populated; when `catalog` is omitted (issue #305, which enumerates the
- * classes an organisation's platforms actually have, cannot answer this on its own when
- * this was written -- see this module's own module-level TODO below) every
- * finding still fires, just without ever naming a specific target class,
- * which trivially satisfies the same rule by asserting nothing that could
- * be wrong.
+ * populated; when `catalog` is omitted, or when it cannot rank this job's
+ * own class (see `ResourceClassCatalog`'s own doc comment below for why that
+ * happens even with a real catalog supplied), every finding still fires,
+ * just without ever naming a specific target class, which trivially
+ * satisfies the same rule by asserting nothing that could be wrong.
  *
  * **Never promises a specific saving.** No finding here carries, and no
  * caller may add, a credits-saved figure -- issue #292's rule ("Consider
@@ -94,14 +93,22 @@ export const HIGH_RAM_THRESHOLD_PCT = 85;
 /**
  * Enumerates which resource classes actually exist for a given platform, so
  * this module never suggests a move to one that doesn't -- the "other
- * half" issue #307 names explicitly, supplied by issue #305's offerings
- * cache (`GET /api/v3/catalog/offerings`).
+ * half" issue #307 names explicitly.
  *
- * TODO(#305): wire a real implementation through once that cache lands.
- * Until then, every call site passes no `catalog` at all (see
- * `RecommendationsSection.tsx`), and every finding below fires without ever
- * populating `suggestedClass` -- deliberately the safe default, not a
- * placeholder implementation that could be wrong about what exists.
+ * This interface was originally written to be supplied by issue #305's
+ * offerings cache (`GET /api/v3/catalog/offerings`). It cannot: verified
+ * against a live payload, that endpoint is purely resource-class-name ->
+ * image-list, with no `cpu`, `ram`, `size`, `order` or `rank` field anywhere
+ * in it, and it excludes every Docker class outright -- it knows which
+ * classes exist, never which is bigger. Issue #8 wires a real implementation
+ * instead, `~/lib/resourceClasses/resourceClassCatalog.ts`, built from the
+ * vendored resource tables' own vCPU/RAM columns (see
+ * `internal/guides/resourceclassrank.go`) rather than from that cache -- see
+ * `RecommendationsSection.tsx` for the call site. A platform/class this
+ * catalog cannot rank (an unrecognised name, or a class whose row failed to
+ * parse) still returns no candidates rather than a guess, which is what lets
+ * this module's own callers keep treating an absent `catalog` argument the
+ * same as one that found nothing.
  */
 export interface ResourceClassCatalog {
   /** Classes smaller than `current` for `platform`, nearest-first. Empty when `current` is already the smallest available (or none is known to be smaller). */

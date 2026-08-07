@@ -35,6 +35,26 @@ export interface ResourceClass {
   architecture: string;
   /** `'gen1'` or `'gen2'`, derived from `name` by the host. */
   generation: string;
+  /**
+   * This class's position among the *other classes in the same
+   * `ResourceClassEnvironment`* -- 0 is the smallest, larger classes get
+   * larger numbers, and classes that tie on both vCPUs and RAM share one.
+   * Derived by the host from the table's own vCPU/RAM columns, never from
+   * `name` (issue #8) -- see `internal/guides/resourceclassrank.go`'s
+   * package-level doc comment for the full reasoning, including why a tie is
+   * sometimes the honest answer (the GPU-on-Linux table's `medium`,
+   * `medium.multi` and `large` are indistinguishable by vCPUs/RAM alone).
+   *
+   * `undefined`/`null` when this row's vCPU or RAM cell could not be parsed
+   * as a number -- treat that as "unknown", not as "smallest": see
+   * `resourceClassCatalog.ts`, the one consumer that reads this field.
+   *
+   * Never compare a `rank` from one environment against a `rank` from
+   * another. `large` on Docker and `large` on macOS are unrelated machines,
+   * and this number is only ever meaningful within the one table it came
+   * from.
+   */
+  rank?: number | null;
 }
 
 /** One upstream resource table: an executor environment's classes, plus what a picker needs to group and filter them. */
