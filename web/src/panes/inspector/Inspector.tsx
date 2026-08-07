@@ -126,6 +126,49 @@ type PaletteStepDropHandler = (
   stepKey: string,
 ) => void;
 
+/**
+ * Issue #21's pre-steps/post-steps counterpart of `OrbCommandDropHandler`/
+ * `PaletteStepDropHandler` above. A workflow entry's `pre-steps:`/
+ * `post-steps:` needs `workflowName`+`nodeId`+`key` to address, not a
+ * `jobName` -- the same reason `buildEntryStepsRoot` takes that triple
+ * instead of a job name -- so these are their own types rather than a
+ * `jobName` these call sites don't have. See `useOrbInsertion.dropOnEntrySteps`
+ * / `usePaletteInsertion.dropStepOnEntrySteps`.
+ */
+type OrbCommandEntryDropHandler = (
+  workflowName: string,
+  nodeId: string,
+  key: WorkflowEntryStepsKey,
+  index: number,
+  payload: OrbDragPayload,
+) => void;
+
+/** The palette-step analogue of `OrbCommandEntryDropHandler`. */
+type PaletteStepEntryDropHandler = (
+  workflowName: string,
+  nodeId: string,
+  key: WorkflowEntryStepsKey,
+  index: number,
+  stepKey: string,
+) => void;
+
+/**
+ * `StepsSection`'s own drop-handler shape -- pre-bound to whichever list it
+ * is rooted at. The job body's own `steps:` call site binds `jobName`
+ * (closing over `onDropOrbCommand`/`onDropPaletteStep` above);
+ * `WorkflowEntryOptionsSection`'s pre-steps/post-steps call sites bind
+ * `workflowName`+`nodeId`+`key` instead (closing over
+ * `onDropOrbCommandOnEntrySteps`/`onDropPaletteStepOnEntrySteps`). Binding at
+ * the call site, rather than threading an address through `StepsSection`
+ * itself, is what lets one component serve both without knowing which kind
+ * of list it is.
+ */
+type StepsSectionOrbDropHandler = (
+  index: number,
+  payload: OrbDragPayload,
+) => void;
+type StepsSectionPaletteDropHandler = (index: number, stepKey: string) => void;
+
 /** Signature every mutation call in this file goes through -- `useAppStore`'s `mutate`. */
 /**
  * Exported so `WorkflowInspector.tsx` (issue #288's workflow-level editor,
@@ -160,9 +203,8 @@ interface InspectorProps {
    * other being a job node in the DAG canvas, which always appends).
    * Optional purely so this component doesn't need a no-op stub in tests
    * that don't exercise drag-and-drop. Only wired up for a job's own body
-   * steps -- dropping an orb command directly onto pre-steps/post-steps
-   * isn't supported (see `WorkflowEntryOptionsSection`); the "Add a run
-   * step" form and reorder/remove still work there.
+   * steps; `onDropOrbCommandOnEntrySteps` below is the pre-steps/post-steps
+   * counterpart.
    */
   onDropOrbCommand?: OrbCommandDropHandler;
   /**
@@ -173,6 +215,19 @@ interface InspectorProps {
    * stub needed in tests that don't exercise this drag-and-drop path.
    */
   onDropPaletteStep?: PaletteStepDropHandler;
+  /**
+   * Issue #21: the pre-steps/post-steps counterpart of `onDropOrbCommand`.
+   * Pre-steps and post-steps are rendered by the same `StepsSection` as a
+   * job's own body -- reorder-by-drag and the keyboard move buttons already
+   * worked there, but nothing wired a *new* command dropped in from the
+   * palette/orb browser to an actual mutation, so the lists looked
+   * draggable and silently refused it. See
+   * `WorkflowEntryOptionsSection`, which binds this to each of pre-steps
+   * and post-steps in turn.
+   */
+  onDropOrbCommandOnEntrySteps?: OrbCommandEntryDropHandler;
+  /** The palette-step analogue of `onDropOrbCommandOnEntrySteps`. */
+  onDropPaletteStepOnEntrySteps?: PaletteStepEntryDropHandler;
 }
 
 /**
@@ -1848,7 +1903,6 @@ function StepsSection({
   title = 'Steps',
   onDropOrbCommand,
   onDropPaletteStep,
-  dropJobName,
 }: {
   root: StepsRoot;
   /** `null` while `/api/schema` is still loading -- threaded down to every `StepRow` (issue #48). */
@@ -1859,11 +1913,15 @@ function StepsSection({
   sectionKey: InspectorSectionKey;
   /** "Steps" for a job body, "Pre-steps"/"Post-steps" for a workflow entry (issue #37). */
   title?: string;
-  onDropOrbCommand?: OrbCommandDropHandler;
+  /**
+   * Already bound to whichever list this is (see `StepsSectionOrbDropHandler`'s
+   * own comment) -- this component never needs to know whether it is rooted at
+   * a job body or a workflow entry's pre/post-steps, only that dropping a
+   * command/step means "insert at this gap".
+   */
+  onDropOrbCommand?: StepsSectionOrbDropHandler;
   /** Issue #71: the same drop target also accepts a palette step card. */
-  onDropPaletteStep?: PaletteStepDropHandler;
-  /** The `jobName` to pass to `onDropOrbCommand`/`onDropPaletteStep` -- only meaningful (and required) when either is given. */
-  dropJobName?: string;
+  onDropPaletteStep?: StepsSectionPaletteDropHandler;
 }) {
   const steps = root.steps;
   const [newName, setNewName] = useState('');
@@ -2092,17 +2150,17 @@ function StepsSection({
       const orbPayload = onDropOrbCommand
         ? readOrbDragPayload(event.dataTransfer, 'command')
         : undefined;
-      if (orbPayload && dropJobName !== undefined) {
+      if (orbPayload) {
         event.preventDefault();
-        onDropOrbCommand?.(dropJobName, gap, orbPayload);
+        onDropOrbCommand?.(gap, orbPayload);
         return;
       }
       const stepPayload = onDropPaletteStep
         ? readPaletteStepDragPayload(event.dataTransfer)
         : undefined;
-      if (stepPayload && dropJobName !== undefined) {
+      if (stepPayload) {
         event.preventDefault();
-        onDropPaletteStep?.(dropJobName, gap, stepPayload.stepKey);
+        onDropPaletteStep?.(gap, stepPayload.stepKey);
         return;
       }
       const fromIndex = draggedStepIndex.current;
@@ -2114,7 +2172,7 @@ function StepsSection({
       event.preventDefault();
       root.move(fromIndex, to);
     },
-    [clearDropGap, dropJobName, onDropOrbCommand, onDropPaletteStep, root],
+    [clearDropGap, onDropOrbCommand, onDropPaletteStep, root],
   );
 
   /**
@@ -2880,6 +2938,8 @@ function WorkflowEntryOptionsSection({
   mutate,
   schema,
   orbAliases,
+  onDropOrbCommandOnEntrySteps,
+  onDropPaletteStepOnEntrySteps,
 }: {
   node: GraphNode;
   workflowName: string;
@@ -2888,6 +2948,9 @@ function WorkflowEntryOptionsSection({
   schema: CircleciSchema | null;
   /** This config's `orbs:` map -- threaded down so an orb command in a pre/post-step resolves its parameters too (issue #252). */
   orbAliases: Record<string, string>;
+  /** Issue #21: see `InspectorProps`'s own doc comment on this pair. */
+  onDropOrbCommandOnEntrySteps?: OrbCommandEntryDropHandler;
+  onDropPaletteStepOnEntrySteps?: PaletteStepEntryDropHandler;
 }) {
   const preStepsRoot = buildEntryStepsRoot(
     workflowName,
@@ -2932,6 +2995,30 @@ function WorkflowEntryOptionsSection({
         orbAliases={orbAliases}
         sectionKey="pre-steps"
         title="Pre-steps"
+        onDropOrbCommand={
+          onDropOrbCommandOnEntrySteps
+            ? (index, payload) =>
+                onDropOrbCommandOnEntrySteps(
+                  workflowName,
+                  node.id,
+                  'pre-steps',
+                  index,
+                  payload,
+                )
+            : undefined
+        }
+        onDropPaletteStep={
+          onDropPaletteStepOnEntrySteps
+            ? (index, stepKey) =>
+                onDropPaletteStepOnEntrySteps(
+                  workflowName,
+                  node.id,
+                  'pre-steps',
+                  index,
+                  stepKey,
+                )
+            : undefined
+        }
       />
       <StepsSection
         root={postStepsRoot}
@@ -2939,6 +3026,30 @@ function WorkflowEntryOptionsSection({
         orbAliases={orbAliases}
         sectionKey="post-steps"
         title="Post-steps"
+        onDropOrbCommand={
+          onDropOrbCommandOnEntrySteps
+            ? (index, payload) =>
+                onDropOrbCommandOnEntrySteps(
+                  workflowName,
+                  node.id,
+                  'post-steps',
+                  index,
+                  payload,
+                )
+            : undefined
+        }
+        onDropPaletteStep={
+          onDropPaletteStepOnEntrySteps
+            ? (index, stepKey) =>
+                onDropPaletteStepOnEntrySteps(
+                  workflowName,
+                  node.id,
+                  'post-steps',
+                  index,
+                  stepKey,
+                )
+            : undefined
+        }
       />
     </>
   );
@@ -3776,6 +3887,8 @@ export function Inspector({
   autoFocusName,
   onDropOrbCommand,
   onDropPaletteStep,
+  onDropOrbCommandOnEntrySteps,
+  onDropPaletteStepOnEntrySteps,
 }: InspectorProps) {
   const mutate = useAppStore((state) => state.mutate);
   const editError = useAppStore((state) => state.editError);
@@ -3871,9 +3984,18 @@ export function Inspector({
               orbAliases={orbAliases}
               sectionKey="steps"
               title="Steps"
-              onDropOrbCommand={onDropOrbCommand}
-              onDropPaletteStep={onDropPaletteStep}
-              dropJobName={node.jobName}
+              onDropOrbCommand={
+                onDropOrbCommand
+                  ? (index, payload) =>
+                      onDropOrbCommand(node.jobName, index, payload)
+                  : undefined
+              }
+              onDropPaletteStep={
+                onDropPaletteStep
+                  ? (index, stepKey) =>
+                      onDropPaletteStep(node.jobName, index, stepKey)
+                  : undefined
+              }
             />
             <DeclaredParametersSection
               doc={doc}
@@ -3912,6 +4034,8 @@ export function Inspector({
           mutate={mutate}
           schema={schema}
           orbAliases={orbAliases}
+          onDropOrbCommandOnEntrySteps={onDropOrbCommandOnEntrySteps}
+          onDropPaletteStepOnEntrySteps={onDropPaletteStepOnEntrySteps}
         />
 
         {/*

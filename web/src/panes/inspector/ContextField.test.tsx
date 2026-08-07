@@ -1,4 +1,10 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -315,6 +321,68 @@ describe('ContextField', () => {
       field.focus();
       await userEvent.keyboard('{ArrowDown}');
       expect(await screen.findByRole('listbox')).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Issue #21: a palette context dropped straight into this field, the same
+   * `addWorkflowJobEntryContext` mutation the canvas's `JobNode` drop already
+   * called, going through the exact same `onAdd` prop the typed-input path
+   * uses -- see the module comment on why there is deliberately no second
+   * mutation path here.
+   */
+  describe('dragging a context in (issue #21)', () => {
+    function paletteContextTransfer(contextName: string): DataTransfer {
+      return {
+        types: ['application/x-vce-palette-context'],
+        getData: (type: string) =>
+          type === 'application/x-vce-palette-context'
+            ? JSON.stringify({ contextName })
+            : '',
+        setData: () => {},
+      } as unknown as DataTransfer;
+    }
+
+    it('calls onAdd with the dropped context name, exactly like committing a typed one', async () => {
+      vi.mocked(rpcClient.getProjectContext).mockResolvedValue(readyResponse());
+      const { onAdd } = renderField();
+      await flushLoad();
+
+      const region = screen.getByTestId('context-field-drop-region');
+      const dataTransfer = paletteContextTransfer('deploy-prod');
+      fireEvent.dragOver(region, { dataTransfer });
+      fireEvent.drop(region, { dataTransfer });
+
+      expect(onAdd).toHaveBeenCalledWith('deploy-prod');
+    });
+
+    it('accepts the drop -- copy cursor, no default browser refusal -- for every node kind this field renders for (issue #37)', async () => {
+      vi.mocked(rpcClient.getProjectContext).mockResolvedValue(readyResponse());
+      renderField();
+      await flushLoad();
+
+      const region = screen.getByTestId('context-field-drop-region');
+      const dataTransfer = paletteContextTransfer('deploy-prod');
+      fireEvent.dragOver(region, { dataTransfer });
+
+      expect(dataTransfer.dropEffect).toBe('copy');
+    });
+
+    it('ignores a drag that is not a palette context, leaving onAdd uncalled', async () => {
+      vi.mocked(rpcClient.getProjectContext).mockResolvedValue(readyResponse());
+      const { onAdd } = renderField();
+      await flushLoad();
+
+      const region = screen.getByTestId('context-field-drop-region');
+      const dataTransfer = {
+        types: ['application/x-vce-orb-command'],
+        getData: () => '',
+        setData: () => {},
+      } as unknown as DataTransfer;
+      fireEvent.dragOver(region, { dataTransfer });
+      fireEvent.drop(region, { dataTransfer });
+
+      expect(onAdd).not.toHaveBeenCalled();
     });
   });
 

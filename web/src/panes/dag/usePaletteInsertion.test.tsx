@@ -339,6 +339,51 @@ describe('usePaletteInsertion', () => {
     ).toBe('checkout');
   });
 
+  /**
+   * Issue #21: the pre-steps/post-steps counterpart of `dropStepOnSteps`
+   * above, addressed by `workflowName`+`nodeId`+`key` instead of a `jobName`
+   * since pre/post-steps belong to the workflow entry, not the job body --
+   * exercised on `hold`, an approval entry, to confirm it needs no local job
+   * definition either (a pre-step is ordinary workflow-entry config for
+   * every node kind, same as context/filters -- issue #37).
+   */
+  it('dropStepOnEntrySteps inserts at the given index in a workflow entry’s pre-steps', () => {
+    const { result } = renderHook(() => usePaletteInsertion('main'));
+
+    act(() => {
+      result.current.dropStepOnEntrySteps(
+        'main',
+        'hold',
+        'pre-steps',
+        0,
+        'checkout',
+      );
+    });
+
+    expect(
+      getIn(useAppStore.getState().doc!, [
+        'workflows',
+        'main',
+        'jobs',
+        1,
+        'hold',
+        'pre-steps',
+        0,
+      ]),
+    ).toBe('checkout');
+    // `type: approval` -- the entry's only other option -- is untouched.
+    expect(
+      getIn(useAppStore.getState().doc!, [
+        'workflows',
+        'main',
+        'jobs',
+        1,
+        'hold',
+        'type',
+      ]),
+    ).toBe('approval');
+  });
+
   it('addStepToJob (the JobPicker keyboard path) appends to the named job', () => {
     const { result } = renderHook(() => usePaletteInsertion('main'));
 

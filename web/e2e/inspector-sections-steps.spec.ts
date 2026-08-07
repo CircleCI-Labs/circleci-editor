@@ -698,6 +698,138 @@ workflows:
   });
 });
 
+/**
+ * Issue #21: pre-steps and post-steps are rendered by this same
+ * `StepsSection` component, which is why they already supported reorder-by-
+ * drag (the describe block above) and the keyboard move arrows (below) --
+ * but `Inspector` never threaded a drop handler down to either of those two
+ * sections, so dragging a *new* palette step or orb command in did nothing,
+ * silently, even though every visual affordance said it should work.
+ *
+ * Driven the same way "an empty step list says where the drop will land
+ * too" (above) drives the job body's own empty state: a synthetic
+ * `DragEvent` carrying a real `DataTransfer`, dispatched directly on the
+ * drop region. `page.dragAndDrop` (used in `dag.spec.ts` for a palette-card
+ * source) needs a real draggable source element to pick up; here the point
+ * under test is what the *target* does with the payload once it lands, so
+ * driving the region directly -- exactly like the empty-list test already
+ * does -- is the more direct proof and needs no extra scaffolding for a
+ * cross-pane native drag.
+ */
+test.describe('dragging a new step into pre-steps/post-steps (issue #21)', () => {
+  /** Opens the named section (it starts collapsed -- `build` has neither list yet) and returns its `[data-testid="step-drop-region"]`, throwing if the section isn't mounted. */
+  async function openEntryStepsRegion(
+    page: Page,
+    title: 'Pre-steps' | 'Post-steps',
+  ) {
+    await page.getByRole('heading', { name: title, exact: true }).click();
+    const details = page.locator('details', {
+      has: page.getByRole('heading', { name: title, exact: true }),
+    });
+    await expect(details).toHaveAttribute('open', '');
+    return details.getByTestId('step-drop-region');
+  }
+
+  test('a palette step dropped on empty Pre-steps lands there, not in the job body’s own steps', async ({
+    page,
+  }) => {
+    await openInspector(page);
+    const region = await openEntryStepsRegion(page, 'Pre-steps');
+    await expect(region.getByText('No pre-steps yet.')).toBeVisible();
+
+    const readYaml = () =>
+      page.evaluate(
+        () =>
+          document.querySelector('[data-testid="pane-yaml"] .cm-content')
+            ?.textContent ?? '',
+      );
+    // FIXTURE_CONFIG's `build`/`test`/`deploy` jobs each already start with
+    // their own `checkout`, so the count that matters is the *delta* this
+    // drop adds, not an absolute number.
+    const checkoutCountBefore = ((await readYaml()).match(/checkout/g) ?? [])
+      .length;
+
+    await region.evaluate((el) => {
+      const transfer = new DataTransfer();
+      transfer.setData(
+        'application/x-vce-palette-step',
+        JSON.stringify({ stepKey: 'checkout' }),
+      );
+      const rect = el.getBoundingClientRect();
+      const init = {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + 10,
+        clientY: rect.top + rect.height / 2,
+        dataTransfer: transfer,
+      };
+      el.dispatchEvent(new DragEvent('dragover', init));
+      el.dispatchEvent(new DragEvent('drop', init));
+    });
+
+    const yaml = await readYaml();
+    // Landed under the workflow entry's own `pre-steps:`, not appended to
+    // `jobs.build.steps` -- the two are addressed by entirely different
+    // mutations (`addWorkflowEntryStep` vs. `addStep`), and this is the
+    // assertion that the inspector wired the drop to the right one.
+    expect(yaml).toContain('pre-steps:');
+    // Exactly one new `checkout`, landed as a workflow-entry step -- not a
+    // rewrite of any job body's own.
+    expect((yaml.match(/checkout/g) ?? []).length).toBe(
+      checkoutCountBefore + 1,
+    );
+    // The guarantee this editor is built on, on the mutation this issue
+    // exists to wire up.
+    expect(yaml).toContain('Managed by the platform team');
+  });
+
+  test('an orb command dropped on empty Post-steps lands there, importing the orb', async ({
+    page,
+  }) => {
+    await openInspector(page);
+    const region = await openEntryStepsRegion(page, 'Post-steps');
+    await expect(region.getByText('No post-steps yet.')).toBeVisible();
+
+    await region.evaluate((el) => {
+      const transfer = new DataTransfer();
+      transfer.setData(
+        'application/x-vce-orb-command',
+        JSON.stringify({
+          kind: 'command',
+          orbRef: 'circleci/node@5.2.0',
+          element: {
+            name: 'install-packages',
+            kind: 'command',
+            parameters: [],
+          },
+        }),
+      );
+      const rect = el.getBoundingClientRect();
+      const init = {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + 10,
+        clientY: rect.top + rect.height / 2,
+        dataTransfer: transfer,
+      };
+      el.dispatchEvent(new DragEvent('dragover', init));
+      el.dispatchEvent(new DragEvent('drop', init));
+    });
+
+    const yaml = await page.evaluate(
+      () =>
+        document.querySelector('[data-testid="pane-yaml"] .cm-content')
+          ?.textContent ?? '',
+    );
+    expect(yaml).toContain('post-steps:');
+    // `node:` is FIXTURE_CONFIG's own orb import already -- this asserts it
+    // was reused, not re-imported under a second alias.
+    expect(yaml.match(/node: circleci\/node@5\.2\.0/g) ?? []).toHaveLength(1);
+    expect(yaml).toContain('node/install-packages');
+    expect(yaml).toContain('Managed by the platform team');
+  });
+});
+
 test.describe('the reorder arrows read as controls (issue #249 part 2)', () => {
   test('have a resting boundary and full-contrast glyphs, and cost no row height', async ({
     page,

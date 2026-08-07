@@ -2261,6 +2261,10 @@ export function DagPane() {
                   }
                   onDropOrbCommand={insertion.dropOnSteps}
                   onDropPaletteStep={paletteInsertion.dropStepOnSteps}
+                  onDropOrbCommandOnEntrySteps={insertion.dropOnEntrySteps}
+                  onDropPaletteStepOnEntrySteps={
+                    paletteInsertion.dropStepOnEntrySteps
+                  }
                 />
               </div>
             </>

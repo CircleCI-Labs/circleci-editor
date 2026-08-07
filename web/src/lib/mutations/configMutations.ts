@@ -2273,6 +2273,42 @@ export function insertOrbStep(
 }
 
 /**
+ * Drops an orb command onto a workflow entry's `pre-steps:`/`post-steps:`:
+ * ensures the orb is imported, then delegates to `addWorkflowEntryStep` for
+ * the actual insertion. The pre-steps/post-steps counterpart of
+ * `insertOrbStep` above -- issue #21 found the two lists asymmetric: reorder
+ * (`moveWorkflowEntryStep`) and remove already worked on pre/post-steps, but
+ * nothing landed a *new* orb command there, so the inspector's own drop
+ * target had no mutation to call even once it was wired up.
+ */
+export function insertOrbEntryStep(
+  doc: Document,
+  args: {
+    workflowName: string;
+    nodeId: string;
+    key: WorkflowEntryStepsKey;
+    orbRef: string;
+    orbAlias?: string;
+    commandName: string;
+    params?: Record<string, unknown>;
+    index?: number;
+  },
+): void {
+  const { alias, value: ref } = orbsEntry(args.orbRef, args.orbAlias);
+  addOrb(doc, alias, ref);
+
+  const stepValue = stepEntry(alias, args.commandName, args.params);
+  addWorkflowEntryStep(
+    doc,
+    args.workflowName,
+    args.nodeId,
+    args.key,
+    stepValue,
+    args.index,
+  );
+}
+
+/**
  * Sets `jobs.<jobName>.executor` to an orb executor reference
  * (`"<alias>/<executorName>"`), ensuring the orb is imported first.
  */
