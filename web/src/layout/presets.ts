@@ -59,6 +59,21 @@ const THREE_COLUMN_ROOT: LayoutNode = split('outer', 'row', 0.3, [
   split('inner', 'row', 0.36, [pane('ai'), DAG_WITH_PALETTE]),
 ]);
 
+// 0.72 leaves the AI pane 28% of the window height, which is measured to be
+// less than its own composer needs, and is kept deliberately.
+//
+// On a 720px-tall window 28% is ~150px of pane column, below TRANSCRIPT_FLOOR,
+// so the composer is pinned at its 56px minimum and cannot grow or be dragged
+// at all. On a 1500px window the pane is ~400px and the composer reaches ~110px,
+// about six lines. So the composer's auto-grow is inert on this, the default
+// preset, and rendering the whole draft in the transcript is what actually makes
+// a long seeded prompt readable here.
+//
+// That degradation is intended -- a pane that small genuinely has nothing to
+// give -- but the open question is about the pane's default share rather than
+// the composer, and giving the AI pane more would take it from the graph, which
+// is the reason a first-run user opens this preset at all. Recorded here so the
+// trade-off is visible at the number that encodes it.
 const GRAPH_FOCUS_ROOT: LayoutNode = split('outer', 'column', 0.72, [
   split('top', 'row', 0.35, [pane('yaml'), DAG_WITH_PALETTE]),
   pane('ai'),
