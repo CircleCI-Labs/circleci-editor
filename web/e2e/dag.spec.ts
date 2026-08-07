@@ -694,9 +694,7 @@ test('a resolvable job group draws its members, with a real ELK-laid-out interio
   await expect(memberRelease).toBeVisible();
 
   // The group itself now renders as the boundary frame, not a job card.
-  await expect(groupWrapper.locator('.vce-dag-group-container')).toHaveCount(
-    1,
-  );
+  await expect(groupWrapper.locator('.vce-dag-group-container')).toHaveCount(1);
 
   // Real, non-degenerate geometry: the internal `release` -> `deploy`
   // ordering is respected, and both sit inside the group's own bounding box
@@ -736,9 +734,7 @@ test('a job group whose membership cannot be resolved renders as unresolved, not
   await mockHostApi(page, { config: CONFIG_WITH_JOB_GROUP });
   await page.goto('/');
 
-  const mysteryWrapper = page.locator(
-    '[data-testid="rf__node-mystery-group"]',
-  );
+  const mysteryWrapper = page.locator('[data-testid="rf__node-mystery-group"]');
   const mysteryNode = mysteryWrapper.locator('.vce-dag-node');
   await expect(mysteryNode).toBeVisible();
   await expect(
