@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseDocument } from 'yaml';
 
-import { referencedContexts } from './referencedContexts';
+import { contextsForJob, referencedContexts } from './referencedContexts';
 
 function doc(source: string) {
   return parseDocument(source);
@@ -95,5 +95,92 @@ workflows:
 
   it('returns nothing for no document', () => {
     expect(referencedContexts(null)).toEqual([]);
+  });
+});
+
+describe('contextsForJob', () => {
+  it('returns the contexts attached to that job, and not a sibling job', () => {
+    const source = doc(`version: 2.1
+workflows:
+  build:
+    jobs:
+      - deploy:
+          context: [deploy-prod]
+      - lint:
+          context: [lint-only]
+`);
+
+    expect(contextsForJob(source, 'deploy')).toEqual(['deploy-prod']);
+    expect(contextsForJob(source, 'lint')).toEqual(['lint-only']);
+  });
+
+  it('returns nothing for a job the workflow never invokes', () => {
+    expect(
+      contextsForJob(
+        doc(`version: 2.1
+workflows:
+  build:
+    jobs:
+      - deploy:
+          context: [deploy-prod]
+`),
+        'never-invoked',
+      ),
+    ).toEqual([]);
+  });
+
+  it('returns nothing for a job with no context: attached', () => {
+    expect(
+      contextsForJob(
+        doc(`version: 2.1
+workflows:
+  build:
+    jobs:
+      - deploy
+`),
+        'deploy',
+      ),
+    ).toEqual([]);
+  });
+
+  // A job invoked from more than one entry has no single "the" entry to read
+  // -- see the function's own doc comment for why this is the union rather
+  // than an intersection or a pick-one.
+  it('unions contexts across every entry that invokes the same job', () => {
+    expect(
+      contextsForJob(
+        doc(`version: 2.1
+workflows:
+  build:
+    jobs:
+      - deploy:
+          context: [deploy-prod]
+  nightly:
+    jobs:
+      - deploy:
+          context: [deploy-nightly]
+`),
+        'deploy',
+      ),
+    ).toEqual(['deploy-prod', 'deploy-nightly']);
+  });
+
+  it('skips a context name that is a parameter reference', () => {
+    expect(
+      contextsForJob(
+        doc(`version: 2.1
+workflows:
+  build:
+    jobs:
+      - deploy:
+          context: << pipeline.parameters.ctx >>
+`),
+        'deploy',
+      ),
+    ).toEqual([]);
+  });
+
+  it('returns nothing for no document', () => {
+    expect(contextsForJob(null, 'deploy')).toEqual([]);
   });
 });

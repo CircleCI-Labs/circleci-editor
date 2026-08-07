@@ -28,7 +28,10 @@ import {
   parseCircleciSchema,
 } from '~/lib/schema/circleciSchema';
 import { createCircleciCompletionSource } from '~/lib/schema/completion';
-import { createEnvVarCompletionSource } from '~/lib/schema/envVarCompletion';
+import {
+  createContextVarCompletionSource,
+  createEnvVarCompletionSource,
+} from '~/lib/schema/envVarCompletion';
 import { buildDiagnostics } from '~/lib/validation/build';
 import { primeXcodeVersions } from '~/lib/xcodeVersions/useXcodeVersions';
 import { diagnosticHeadline } from '~/lib/validation/diagnostics';
@@ -364,6 +367,12 @@ export function YamlPane() {
   // between them. It never rejects out of here -- with no CircleCI token the
   // store settles on `unavailable` and the completion source proposes nothing,
   // exactly like the schema source above when its fetch fails.
+  //
+  // This is also what makes the context-var source (issue #23) possible at
+  // all: it needs the organization's context list (fetched by this same
+  // `load`) to turn a job's `context: [deploy-prod]` into an id before it can
+  // ask for that context's own variables. It does not need a second effect
+  // here -- `load`'s idempotence covers it exactly the same way.
   useEffect(() => {
     void useProjectContextStore.getState().load();
   }, []);
@@ -499,22 +508,33 @@ export function YamlPane() {
     // its `syntaxHighlighting` default is, so there is never a *default*
     // source (or a second Tab/Ctrl-Space keymap) fighting these.
     //
-    // Two sources are registered, deliberately -- this used to be one, and
-    // said so. `override` merges N sources' results, and the env-var source
-    // (issue #105) has to be its own rather than a branch of the schema
-    // source: `circleciCompletionSource` returns null inside an opaque
-    // scalar, and `command: |` -- a block literal -- is exactly where `$NAME`
-    // completions are wanted. See `envVarCompletion.ts`'s own doc comment.
+    // Three sources are registered, deliberately -- this used to be one, then
+    // two, and said so both times. `override` merges N sources' results, and
+    // the env-var sources (issues #105, #23) have to be their own rather than
+    // a branch of the schema source: `circleciCompletionSource` returns null
+    // inside an opaque scalar, and `command: |` -- a block literal -- is
+    // exactly where `$NAME` completions are wanted. See
+    // `envVarCompletion.ts`'s own doc comment.
     //
-    // Either source may contribute nothing, and that is a normal state: before
+    // The context-var source (issue #23) is its own function rather than a
+    // branch inside the project-var one for the same reason those two are
+    // already separate from the schema source: they resolve their names
+    // completely differently (a synchronous store read vs. an async,
+    // per-job context fetch), and folding them together would make one
+    // function's failure mode -- "no token" vs. "this job attaches no
+    // context this editor could match to an id" -- harder to reason about
+    // than two functions each returning `null` for their own reason.
+    //
+    // Any source may contribute nothing, and that is a normal state: before
     // the schema has loaded the first proposes nothing, and with no CircleCI
-    // token the second proposes nothing. The extension is registered
+    // token the other two propose nothing. The extension is registered
     // regardless, so keybindings are stable from first render.
     const source = [
       ...(circleciSchema
         ? [createCircleciCompletionSource(circleciSchema)]
         : []),
       createEnvVarCompletionSource(),
+      createContextVarCompletionSource(),
     ];
     return [
       yaml(),
