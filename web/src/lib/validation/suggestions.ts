@@ -10,11 +10,17 @@
  *
  *  1. The replacement comes from a *closed candidate set* that is either
  *     enumerated by CircleCI itself in the very error being fixed (the
- *     `Permitted keys:` block; the orb registry's published version list) or
+ *     `Permitted keys:` block; the orb registry's published version list),
  *     enumerated by the open document (its own `jobs:`, `executors:`,
- *     `commands:`, or a workflow's own entry aliases). Nothing is ever
- *     invented, and nothing is ever recalled from the model of a schema this
- *     app happens to have vendored.
+ *     `commands:`, or a workflow's own entry aliases), or -- the one
+ *     exception, for the one diagnostic that is itself self-sourced --
+ *     `topLevelKeys.ts`'s known top-level keys (issue #5). That list is this
+ *     app's own reading of the schema and docs, not something CircleCI
+ *     confirmed, but the diagnostic it fixes already says so (`describeSource`
+ *     labels it "Local check", never "CircleCI compiler"), so the button
+ *     riding on it is no less honest than the warning it's attached to.
+ *     Nothing here is ever invented outright, and nothing is ever recalled
+ *     from a schema this app hasn't actually vendored.
  *  2. Exactly one candidate is a near match (see `nearestUnique`). A tie is
  *     a declined suggestion, not a coin flip.
  *
@@ -57,7 +63,16 @@ import {
 } from '~/lib/yaml/documentUtils';
 
 import type { Diagnostic, ExtraneousKeyFinding } from './diagnostics';
+import { editDistance, nearestUnique } from './editDistance';
 import { findRequiresItemNodes, findStepNode, workflowEntries } from './locate';
+import { KNOWN_TOP_LEVEL_KEYS } from './topLevelKeys';
+
+// Re-exported for callers that reach these through this module -- the
+// distance check used to live here (`stpes` -> `steps`) before issue #5
+// needed the identical logic one level up (`workflow` -> `workflows`) and it
+// moved to `editDistance.ts` so the two modules don't import each other (see
+// that module's doc comment).
+export { editDistance, nearestUnique };
 
 /**
  * Built-in step names, taken from `internal/schema/schema.json`'s
@@ -81,81 +96,6 @@ const BUILTIN_STEPS = [
   'unless',
   'when',
 ];
-
-/** The largest edit distance still considered a typo rather than a different word. */
-const MAX_DISTANCE = 2;
-
-/**
- * Optimal string alignment distance (Levenshtein plus adjacent
- * transposition). The transposition case is not optional here: the two
- * typos this feature was built against -- `stpes` for `steps` and `chekcout`
- * for `checkout` -- are both single transpositions, which plain Levenshtein
- * scores as 2 and would therefore rank level with genuinely unrelated
- * two-edit candidates.
- */
-export function editDistance(a: string, b: string): number {
-  const rows = a.length + 1;
-  const cols = b.length + 1;
-  const d: number[][] = Array.from({ length: rows }, () =>
-    Array.from({ length: cols }, () => 0),
-  );
-  for (let i = 0; i < rows; i++) (d[i] as number[])[0] = i;
-  for (let j = 0; j < cols; j++) (d[0] as number[])[j] = j;
-
-  for (let i = 1; i < rows; i++) {
-    for (let j = 1; j < cols; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      const row = d[i] as number[];
-      const prev = d[i - 1] as number[];
-      row[j] = Math.min(
-        (prev[j] as number) + 1,
-        (row[j - 1] as number) + 1,
-        (prev[j - 1] as number) + cost,
-      );
-      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
-        const prev2 = d[i - 2] as number[];
-        row[j] = Math.min(row[j] as number, (prev2[j - 2] as number) + cost);
-      }
-    }
-  }
-  return (d[a.length] as number[])[b.length] as number;
-}
-
-/**
- * The single closest candidate to `typo`, or `undefined` when there isn't
- * exactly one. Three conditions, each of which has to hold before this app
- * will put a candidate behind a button:
- *
- *  - the distance is at most `MAX_DISTANCE`;
- *  - the distance is strictly less than the shorter of the two words, so
- *    short names (`os` vs `at`) can't "near-match" each other;
- *  - no other candidate ties for that distance -- a tie is ambiguity, and
- *    ambiguity is declined.
- */
-export function nearestUnique(
-  typo: string,
-  candidates: readonly string[],
-): string | undefined {
-  let best: string | undefined;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  let tied = false;
-
-  for (const candidate of candidates) {
-    if (candidate === typo) return undefined; // nothing to fix
-    const distance = editDistance(typo, candidate);
-    if (distance > MAX_DISTANCE) continue;
-    if (distance >= Math.min(typo.length, candidate.length)) continue;
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = candidate;
-      tied = false;
-    } else if (distance === bestDistance) {
-      tied = true;
-    }
-  }
-
-  return tied ? undefined : best;
-}
 
 /**
  * One offered fix. `apply` is a surgical mutation of the live `Document`,
@@ -244,6 +184,38 @@ function suggestForExtraneousKey(
 }
 
 /**
+ * Issue #5: a rename for the one diagnostic this app raises about its own
+ * suspicion rather than something CircleCI said. The rationale is worded
+ * accordingly -- "this editor's own check" rather than "CircleCI listed" --
+ * because `suggestForExtraneousKey`'s rationale above would be a false claim
+ * of provenance here: there is no compiler report this candidate was read
+ * out of.
+ */
+function suggestForTopLevelKeyTypo(doc: Document, key: string): Suggestion[] {
+  const replacement = nearestUnique(key, KNOWN_TOP_LEVEL_KEYS);
+  if (!replacement) return [];
+  // Same collision guard as the extraneous-key case: a document that already
+  // has both `workflow:` and `workflows:` would have the rename refused by
+  // `renameKey` anyway, and a button that can't work is its own kind of
+  // wrong answer.
+  if (keysAt(doc, []).includes(replacement)) return [];
+
+  return [
+    {
+      id: 'top-level-key-typo',
+      label: `Rename "${key}" to "${replacement}"`,
+      rationale: `"${replacement}" is this editor's only known top-level CircleCI config key within a typo's distance of "${key}" -- CircleCI's compiler did not flag "${key}" itself; this is this editor's own suspicion, not something it confirmed.`,
+      mutationLabel: `Rename ${key} to ${replacement}`,
+      apply: (target) => {
+        if (!renameKey(target, [], key, replacement)) {
+          throw new Error(STALE);
+        }
+      },
+    },
+  ];
+}
+
+/**
  * Derives the fixes worth offering for one diagnostic. Returns `[]` -- which
  * the UI renders as "no reliable automatic fix" rather than hiding the error
  * -- for everything this module declines; see its doc comment for the list.
@@ -258,6 +230,15 @@ export function suggestionsFor(
 
   switch (target.kind) {
     case 'schemaPath': {
+      // Issue #5's top-level near-miss check produces a `schemaPath` target
+      // too (`path: []`, `key` set), but it never carries `extraneousKeys` --
+      // there is no compiler report to have read one from, since the whole
+      // point of that diagnostic is that CircleCI's compiler didn't say
+      // anything. `diagnostic.source` is the reliable way to tell the two
+      // apart rather than inferring it from an absent field.
+      if (diagnostic.source === 'local' && target.key !== undefined) {
+        return suggestForTopLevelKeyTypo(doc, target.key);
+      }
       // The findings are re-read from the diagnostic rather than recomputed:
       // `extraneousKeys` is what CircleCI actually printed for this report.
       const findings = diagnostic.extraneousKeys ?? [];

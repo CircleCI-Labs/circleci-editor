@@ -20,6 +20,18 @@
  * are happy with may still fail to compile. `DiagnosticsResult.state`
  * carries that distinction through to the UI so "we found nothing wrong"
  * is never rendered as "this config is valid".
+ *
+ * One local check is an exception to that "strictly weaker" rule, and runs
+ * even when the compiler *did* return a real result of `valid`: issue #5's
+ * top-level near-miss check (`topLevelKeyTypos`). It has to, because the bug
+ * it exists for is a config the compiler is genuinely happy with -- CircleCI
+ * never checks a top-level key against anything, so `workflow:` in place of
+ * `workflows:` is not a case the compiler disagrees with this app about, it
+ * is a case the compiler has no opinion on at all. `state` still says
+ * `valid` in that case (CircleCI's verdict is not this app's to overrule --
+ * see this file's honest-degradation rule above), but `diagnostics` carries
+ * the warning anyway, labelled `local` so it is never mistaken for something
+ * CircleCI said.
  */
 import type { Document } from 'yaml';
 
@@ -32,6 +44,7 @@ import {
   type DiagnosticSource,
 } from './diagnostics';
 import { locateTarget } from './locate';
+import { topLevelKeyTypos } from './topLevelKeys';
 
 /**
  * The slice of `appStore` this module needs -- a narrow structural type
@@ -65,6 +78,11 @@ export interface DiagnosticsSource {
  * "diagnostics.length > 0" would collapse into two:
  *
  *  - `valid`     -- CircleCI compiled it. The strongest statement available.
+ *    Not a promise that `diagnostics` is empty, though: issue #5's top-level
+ *    near-miss check runs even here, because it exists for exactly a config
+ *    CircleCI is genuinely happy with (see `localDiagnostics`). A `valid`
+ *    config with a `local`-sourced warning is not a contradiction --
+ *    CircleCI never checked the thing the warning is about.
  *  - `invalid`   -- CircleCI refused it. `diagnostics` are its own words.
  *  - `checking`  -- a request is in flight; the previous verdict still stands.
  *  - `localOnly` -- nothing was compiled (no token / request failed), so
@@ -129,17 +147,55 @@ function fromCompileErrors(
 }
 
 /**
+ * Issue #5's top-level near-miss check, turned into diagnostics. Split out
+ * from `localDiagnostics` below (which it also feeds into) because it is
+ * called from one place that function is not: `buildDiagnostics`'s `valid`
+ * branch. Every *other* local check is about workflow structure the compiler
+ * itself validates too, so a real `valid` verdict makes them structurally
+ * incapable of finding anything (see that branch's own comment) -- but this
+ * one exists precisely because the compiler does not check the thing it
+ * looks at, so a `valid` verdict says nothing about it either way.
+ */
+export function topLevelKeyDiagnostics(
+  doc: Document | null,
+  text: string,
+): Diagnostic[] {
+  if (!doc) return [];
+  return topLevelKeyTypos(doc).map((typo, index) => {
+    // `path: []` is the document root -- `locate.ts`'s `keyNodeAt` already
+    // handles that generically (an empty path resolves to `doc.contents`
+    // itself), so this reuses the existing `schemaPath` machinery rather
+    // than inventing a new target kind for "a key at the top level".
+    const target = { kind: 'schemaPath' as const, path: [], key: typo.key };
+    return {
+      id: `local-toplevel-${index}`,
+      source: 'local' as const,
+      severity: 'warning' as const,
+      // No issue number in the words a user actually reads -- that belongs
+      // in this file's comments, not in something rendered on screen.
+      title: `Unrecognised top-level key "${typo.key}" -- within a typo's distance of only "${typo.replacement}". CircleCI's compiler does not check top-level keys, so it will not catch this either.`,
+      detail: [],
+      context: [],
+      location: locateTarget(doc, text, target),
+      target,
+    };
+  });
+}
+
+/**
  * The offline half: every workflow's structural problems, as
- * `buildWorkflowGraph` already computes them. Messages are the graph's own,
- * verbatim -- this does not reword them, and it does not invent problems the
- * graph doesn't report.
+ * `buildWorkflowGraph` already computes them, plus `topLevelKeyDiagnostics`
+ * (issue #5's check, which isn't about any workflow at all -- see its own
+ * doc comment for why it's folded in here too). The workflow-structural
+ * messages are the graph's own, verbatim; this does not reword them, and it
+ * does not invent problems the graph doesn't report.
  */
 export function localDiagnostics(
   doc: Document | null,
   text: string,
 ): Diagnostic[] {
   if (!doc) return [];
-  const diagnostics: Diagnostic[] = [];
+  const diagnostics: Diagnostic[] = topLevelKeyDiagnostics(doc, text);
   for (const workflow of listWorkflows(doc)) {
     const { problems } = buildWorkflowGraph(doc, workflow);
     problems.forEach((problem, index) => {
@@ -188,8 +244,26 @@ export function buildDiagnostics(source: DiagnosticsSource): DiagnosticsResult {
   if (parseError) return EMPTY;
 
   switch (validation.state) {
-    case 'valid':
-      return { state: 'valid', source: null, diagnostics: [] };
+    case 'valid': {
+      // Issue #5: CircleCI's "valid" is not this app's cue to stop looking,
+      // but only for the one check built to run alongside it.
+      // `topLevelKeyDiagnostics` is deliberately narrower than the full
+      // `localDiagnostics` used below for `invalid`/`localOnly`: workflow-
+      // structural findings (`buildWorkflowGraph`'s dangling `requires:`,
+      // undefined jobs) are exactly what CircleCI's own compiler checks too,
+      // so running them against a config the compiler just approved could
+      // only ever be a bug in *this app's* weaker heuristic -- never a real
+      // second opinion worth surfacing, and never worth risking a false
+      // "this valid config has a problem" over. The top-level check has no
+      // such conflict: CircleCI does not check the thing it looks at, so its
+      // silence is not a verdict this app would be contradicting.
+      const diagnostics = topLevelKeyDiagnostics(doc, text);
+      return {
+        state: 'valid',
+        source: diagnostics.length > 0 ? 'local' : null,
+        diagnostics,
+      };
+    }
 
     case 'invalid': {
       const diagnostics = fromCompileErrors(validation.errors, doc, text);

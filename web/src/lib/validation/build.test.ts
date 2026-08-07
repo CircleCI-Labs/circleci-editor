@@ -7,7 +7,12 @@ import {
   SCHEMA_EXTRANEOUS_KEY,
   UNKNOWN_EXECUTOR,
 } from './apiFixtures';
-import { buildDiagnostics, localDiagnostics, sortDiagnostics } from './build';
+import {
+  buildDiagnostics,
+  localDiagnostics,
+  sortDiagnostics,
+  topLevelKeyDiagnostics,
+} from './build';
 import type { DiagnosticsSource } from './build';
 
 const BROKEN = `version: 2.1
@@ -164,6 +169,101 @@ describe('buildDiagnostics: which source is speaking', () => {
     expect(result.state).toBe('unknown');
     expect(result.diagnostics).toEqual([]);
     expect(result.source).toBeNull();
+  });
+});
+
+// Issue #5: `workflow:` in place of `workflows:` compiles `valid: true` on
+// the live API with an empty `errors` array (verified against
+// `compile-config-with-defaults` -- see this change's PR description), so a
+// config that will run nothing looks identical, everywhere else in this
+// app, to one that's actually fine. These pin the one check this app raises
+// about that on its own.
+describe('buildDiagnostics: issue #5, an unrecognised top-level key', () => {
+  const TYPO = `version: 2.1
+workflow:
+  main:
+    jobs:
+      - build
+jobs:
+  build:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+`;
+
+  it('warns on "workflow", the near miss of "workflows" issue #5 was filed over, even though CircleCI says valid', () => {
+    const result = buildDiagnostics(
+      source({ text: TYPO, validation: { state: 'valid', errors: [] } }),
+    );
+    // The compiler's own verdict is not overruled...
+    expect(result.state).toBe('valid');
+    // ...but this app's own warning still shows, clearly not attributed to
+    // CircleCI.
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.source).toBe('local');
+    expect(result.diagnostics[0]?.source).toBe('local');
+    expect(result.diagnostics[0]?.severity).toBe('warning');
+    expect(result.diagnostics[0]?.title).toContain('"workflow"');
+    expect(result.diagnostics[0]?.title).toContain('"workflows"');
+  });
+
+  it('stays silent on an unrecognised top-level key that is not a near miss of anything', () => {
+    // `notifications` is not within a typo's distance of any known top-level
+    // key -- it reads as a deliberate addition, not a typo, and issue #5 is
+    // explicit that this app must not nag about that.
+    const deliberate = `version: 2.1
+notifications:
+  webhook: https://example.com/hook
+jobs:
+  build:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+workflows:
+  main:
+    jobs:
+      - build
+`;
+    const result = buildDiagnostics(
+      source({
+        text: deliberate,
+        validation: { state: 'valid', errors: [] },
+      }),
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(result.source).toBeNull();
+  });
+
+  it('produces no warning at all for a config with only recognised top-level keys', () => {
+    const clean = `version: 2.1
+jobs:
+  build:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+workflows:
+  main:
+    jobs:
+      - build
+`;
+    const result = buildDiagnostics(
+      source({ text: clean, validation: { state: 'valid', errors: [] } }),
+    );
+    expect(result.diagnostics).toEqual([]);
+    expect(result.source).toBeNull();
+  });
+
+  it("locates the warning at the misspelled key's own line", () => {
+    const { doc } = parseConfig(TYPO);
+    const [diagnostic] = topLevelKeyDiagnostics(doc, TYPO);
+    expect(diagnostic?.location).toEqual({
+      line: 2,
+      column: 1,
+      basis: 'resolved',
+    });
   });
 });
 
