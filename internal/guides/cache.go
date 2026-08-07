@@ -410,7 +410,19 @@ func laterOf(a, b time.Time) time.Time {
 // stale reports whether the served copy is older than refreshTTL.
 func (c *Cache) stale() bool {
 	_, prov, _ := c.snapshot()
-	return time.Since(prov.FetchedAt) > refreshTTL
+	return prov.Stale()
+}
+
+// Stale reports whether p's last confirmed-current check (FetchedAt) is
+// older than refreshTTL -- the identical test Cache.stale applies to its own
+// state, exposed on the value Guides() returns rather than only on the
+// unexported method above, for the one caller that has a Provenance but no
+// Cache to ask: the AI pane's grounding prompt (issue #22) states this fact
+// to the model rather than presenting vendored prose as current
+// unconditionally, and it must use the same threshold that actually governs
+// when a background refresh is attempted, not a second guess at one.
+func (p Provenance) Stale() bool {
+	return time.Since(p.FetchedAt) > refreshTTL
 }
 
 // refresh fetches, parses and publishes a newer copy of the guides, then
