@@ -25,6 +25,10 @@ describe('docsLinks table shape', () => {
         // Not from #78: added by #105, whose palette Project section links
         // out to the project environment variables docs.
         'env',
+        // Not from #78 either: added by #19, for the inspector's Steps
+        // section header itself (as opposed to `steps` above, which is
+        // per-keyword and comes from STEP_DOCS_ANCHORS, not this group).
+        'jobs',
       ]),
     );
   });

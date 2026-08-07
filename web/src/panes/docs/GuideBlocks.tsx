@@ -8,7 +8,7 @@
  * into data instead of handing over HTML: there is no foreign stylesheet to
  * fight and no third-party markup to sanitise.
  *
- * Two rules this file must keep:
+ * Three rules this file must keep:
  *
  *  1. **Code samples are selectable, verbatim text.** Users copy them into a
  *     config. No syntax rewriting, no re-indenting, no trimming. Syntax
@@ -17,6 +17,13 @@
  *  2. **A cross-reference that cannot be resolved renders as plain text, never
  *     as a control that does nothing.** Upstream ships three broken ones today;
  *     `resolveRef` returning `undefined` is the expected case, not an error.
+ *  3. **A link that leaves the app looks different from one that doesn't**
+ *     (issue #10). A `ref` span and a `link` span used to render identically
+ *     -- same colour, same underline -- so a reader could not tell which one
+ *     was about to open a new tab until they clicked it. `isExternalUrl`
+ *     (`~/lib/docs/externalLink`) answers that from the resolved URL itself,
+ *     not from the span kind, so it stays correct if either side of that
+ *     distinction ever changes.
  *
  * # Code blocks and syntax highlighting (issue #291)
  *
@@ -39,6 +46,7 @@
  */
 import type { ReactNode } from 'react';
 
+import { isExternalUrl } from '~/lib/docs/externalLink';
 import { resolveRef } from '~/lib/guides/guides';
 import type { Block, Guide, ListItem, Span } from '~/lib/guides/types';
 import { HighlightedCode } from '~/lib/highlight/codeHighlight';
@@ -84,8 +92,21 @@ const FALLBACK_TONE = {
 export interface GuideRenderContext {
   /** The guide these blocks belong to, for resolving `ref` spans. */
   guide: Guide;
-  /** Navigates the pane to a section in the same guide. */
-  onNavigate: (sectionId: string) => void;
+  /**
+   * Navigates the pane to a section in the same guide, and -- issue #19 --
+   * to `anchor` within it once the section's own content has rendered.
+   * `anchor` is the `ref` span's own raw target, which is very often *not*
+   * `sectionId` itself: upstream attaches `[#id]` to a heading nested inside
+   * a section (`<<the-when-attribute>>`, `<<jobfilters>>`, `<<type>>` all do
+   * this in the real configuration reference) and `Guide.anchors` maps that
+   * id to the *enclosing section*, not to itself -- the section is the most
+   * any caller could resolve before this issue. The block carrying `anchor`
+   * as its own DOM `id` (see `BlockNode` below) already existed; only the
+   * "scroll to it, not just to the section" half was missing. Equal to
+   * `sectionId` for a ref that targets a section directly, in which case the
+   * caller has nothing extra to scroll to.
+   */
+  onNavigate: (sectionId: string, anchor: string) => void;
 }
 
 function SpanList({
@@ -134,7 +155,15 @@ function SpanNode({
       return <strong className="font-semibold text-cc-text">{children}</strong>;
     case 'em':
       return <em className="italic">{children}</em>;
-    case 'link':
+    case 'link': {
+      // Issue #10: this and a `ref` button below were styled identically --
+      // same colour, same underline -- so a reader could not tell which one
+      // was about to leave the app without clicking it. `isExternalUrl` is
+      // the same check `ProvenanceFooter`'s "Read on circleci.com" marker
+      // implies by construction, applied here explicitly and generically
+      // rather than assumed from "this is a `link` span" (see that module's
+      // own doc comment for why the distinction matters).
+      const external = isExternalUrl(span.url);
       return (
         <a
           href={span.url}
@@ -143,8 +172,20 @@ function SpanNode({
           className="text-cc-accent underline decoration-cc-accent/40 hover:decoration-cc-accent"
         >
           {children}
+          {external ? (
+            <>
+              {/* A glyph, not a colour change -- an external marker must not
+                  be conveyed by colour alone. `aria-hidden` because the
+                  sr-only text right after it says the same thing in words. */}
+              <span aria-hidden="true" className="ml-0.5">
+                &#8599;
+              </span>
+              <span className="sr-only"> (opens in a new tab)</span>
+            </>
+          ) : null}
         </a>
       );
+    }
     case 'ref': {
       const sectionId = resolveRef(context.guide, span.target);
       if (!sectionId) {
@@ -152,10 +193,17 @@ function SpanNode({
         // broken. Show the words, offer no control.
         return <>{children}</>;
       }
+      // `span.target` is guaranteed non-empty here: resolveRef only returns a
+      // value when it was given a truthy target (see that function's own
+      // guard). Passed through as-is, not just `sectionId`, so the caller can
+      // scroll to the exact block if `Guide.anchors` mapped it to something
+      // more specific than "the whole section" (issue #19).
       return (
         <button
           type="button"
-          onClick={() => context.onNavigate(sectionId)}
+          onClick={() =>
+            context.onNavigate(sectionId, span.target ?? sectionId)
+          }
           className="text-cc-accent underline decoration-cc-accent/40 hover:decoration-cc-accent"
         >
           {children}
@@ -173,7 +221,7 @@ function SpanNode({
 
 function CodeBlock({ block }: { block: Block }) {
   return (
-    <figure className="min-w-0">
+    <figure id={block.id || undefined} className="min-w-0">
       {block.title ? (
         <figcaption className="mb-1 text-2xs font-medium uppercase tracking-wide text-cc-text-faint">
           {block.title}
@@ -210,7 +258,7 @@ function TableBlock({
   const table = block.table;
   if (!table) return null;
   return (
-    <div className="min-w-0 overflow-x-auto">
+    <div id={block.id || undefined} className="min-w-0 overflow-x-auto">
       {block.title ? (
         <p className="mb-1 text-2xs font-medium uppercase tracking-wide text-cc-text-faint">
           {block.title}
@@ -261,6 +309,7 @@ function AdmonitionBlock({
   const tone = ADMONITION_TONES[name] ?? FALLBACK_TONE;
   return (
     <aside
+      id={block.id || undefined}
       className={`min-w-0 rounded-r border-l-2 py-2 pl-3 pr-2 ${tone.border} ${tone.bg}`}
     >
       <p
@@ -291,9 +340,13 @@ function ListBlock({
     </li>
   ));
   return block.ordered ? (
-    <ol className={className}>{content}</ol>
+    <ol id={block.id || undefined} className={className}>
+      {content}
+    </ol>
   ) : (
-    <ul className={className}>{content}</ul>
+    <ul id={block.id || undefined} className={className}>
+      {content}
+    </ul>
   );
 }
 
@@ -315,6 +368,19 @@ function ParserNoteBlock({
   );
 }
 
+/**
+ * Every case below sets `id={block.id || undefined}` on its own root
+ * element, not only the `heading` case (issue #19). `block.id` is only ever
+ * non-empty when the source's own `[#id]` line named this exact block --
+ * upstream's current three vendored pages only ever do that to a heading,
+ * but the Go parser (`internal/guides/asciidoc.go`) attaches it to any
+ * block kind, and this renderer must not be the reason that stops mattering
+ * the day upstream anchors a paragraph or a table instead. `|| undefined`
+ * rather than the bare (possibly `""`) string: React renders `id=""` as a
+ * real, empty `id` attribute, which is worse than no attribute at all --
+ * `document.getElementById('')` never matches it, but it *would* make every
+ * anchor-less block on the page share the literal id `""`.
+ */
 function BlockNode({
   block,
   context,
@@ -325,7 +391,10 @@ function BlockNode({
   switch (block.kind) {
     case 'paragraph':
       return (
-        <p className="min-w-0 text-xs leading-relaxed text-cc-text-muted">
+        <p
+          id={block.id || undefined}
+          className="min-w-0 text-xs leading-relaxed text-cc-text-muted"
+        >
           <SpanList spans={block.spans} context={context} />
         </p>
       );
@@ -349,7 +418,10 @@ function BlockNode({
       // An unknown block kind from a newer host: show whatever text it
       // carries rather than dropping it silently.
       return (
-        <p className="min-w-0 text-xs leading-relaxed text-cc-text-muted">
+        <p
+          id={block.id || undefined}
+          className="min-w-0 text-xs leading-relaxed text-cc-text-muted"
+        >
           <SpanList spans={block.spans} context={context} />
           {block.text}
         </p>

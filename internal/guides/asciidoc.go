@@ -84,6 +84,16 @@ type parser struct {
 	// survive to the heading, or an explicit id silently becomes a
 	// slugified-title guess and every anchor-based lookup for that heading
 	// (tablesByAnchor, Guide.Anchors) misses it.
+	// It also has a second consumer, and they are deliberately the same field
+	// rather than two: parseBlocks' end-of-iteration attach step uses it to
+	// give a *block* the anchor that immediately precedes it, so a mid-section
+	// `[#id]` resolves to the block it actually sits on and not merely to the
+	// enclosing section. Both consumers want the identical thing -- "the most
+	// recent explicit id nobody has claimed yet" -- and the block case is the
+	// more general one, since a heading is a block. Two fields tracking one
+	// concept was how this arrived (two changes adding it independently, one
+	// for heading anchors and one for block anchors) and it did not compile;
+	// keeping one is also the only way they cannot drift apart.
 	pendingAnchor string
 	// pendingTitle is the most recent `.Title` block-title line.
 	pendingTitle string
@@ -422,6 +432,12 @@ func (p *parser) parseBlocks(stop func() bool) []Block {
 		}
 		raw := p.lines[p.pos]
 		line := strings.TrimSpace(raw)
+		// Recorded so the attach step below (after the switch) can tell
+		// whether *this* iteration actually produced a block to carry
+		// p.pendingAnchor, as opposed to one of the no-op iterations (blank
+		// line, comment, another `[...]` line) that must let it carry
+		// forward untouched.
+		blocksBefore := len(blocks)
 
 		switch {
 		case line == "":
@@ -465,10 +481,13 @@ func (p *parser) parseBlocks(stop func() bool) []Block {
 			// A `[#id]` here anchors an ordinary block rather than a section
 			// (parseBlocksUntilHeading already peeled off the ones that
 			// introduce a section). Upstream cross-references those freely,
-			// so record them as reachable via the enclosing section -- the
-			// pane cannot scroll to a mid-section anchor, but taking the
-			// reader to the right section is a great deal better than a link
-			// that does nothing.
+			// so record it two ways: unconditionally reachable via the
+			// enclosing section (noteAnchor, as before -- the fallback for
+			// when the attach step below can't pin it to one specific
+			// block), and, when the block that follows turns out to be
+			// addressable at all, pinned to exactly that block via
+			// pendingAnchor (issue #19) so navigation can scroll to the
+			// block itself rather than just the top of its section.
 			if anchor, ok := anchorAttr(line); ok {
 				p.noteAnchor(anchor, p.currentSection)
 				p.pendingAnchor = anchor
@@ -536,6 +555,24 @@ func (p *parser) parseBlocks(stop func() bool) []Block {
 		default:
 			blocks = append(blocks, p.parseParagraph())
 		}
+
+		// Attach a still-pending block-level anchor to the first block this
+		// iteration actually produced, then clear it -- its one opportunity
+		// has passed regardless of whether it was used (issue #19). A
+		// multi-block result (an `include::`, a transparent wrapper) attaches
+		// to the first block in document order, the same "first wins"
+		// convention noteAnchor and NewCitationResolver both already use for
+		// an analogous ambiguity. Never overwrites an ID a case already set
+		// for its own reasons (a heading's own explicit-or-slugified id, via
+		// pendingAttrs) -- those two are derived from the same preceding
+		// `[#id]` line in the common case anyway, so this is a no-op then,
+		// not a conflict.
+		if len(blocks) > blocksBefore && p.pendingAnchor != "" {
+			if blocks[blocksBefore].ID == "" {
+				blocks[blocksBefore].ID = p.pendingAnchor
+			}
+			p.pendingAnchor = ""
+		}
 	}
 	return blocks
 }
@@ -588,9 +625,19 @@ func isHeadingLine(line string) bool {
 	return ok
 }
 
+// clearPending drops the pending attribute line and block title.
+//
+// Deliberately does NOT clear pendingAnchor. Almost every block case calls
+// this (usually via takePending) as it consumes its own attributes, which
+// would destroy the anchor before parseBlocks' end-of-iteration attach step
+// could give it to the block that was just produced -- so a mid-section
+// `[#id]` on an ordinary paragraph would resolve only to its enclosing
+// section, which is the bug that step exists to fix. The attach step is the
+// single owner of pendingAnchor's lifetime; a heading that consumed the
+// anchor for its own id leaves a non-empty ID behind, which that step then
+// declines to overwrite and clears.
 func (p *parser) clearPending() {
 	p.pendingAttrs = ""
-	p.pendingAnchor = ""
 	p.pendingTitle = ""
 }
 

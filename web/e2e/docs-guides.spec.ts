@@ -111,6 +111,25 @@ const CONFIGURATION_REFERENCE = {
             },
           ],
         },
+        // Issue #19's mid-section-anchor case: `the-when-attribute` maps to
+        // `savecache` in `anchors` above (the enclosing *section*, the most
+        // this fixture's real-world counterpart could resolve before this
+        // issue) but the heading actually carrying that anchor is nested well
+        // into the section, past several other blocks -- exactly the shape of
+        // `<<the-when-attribute>>` in the real configuration reference.
+        {
+          kind: 'paragraph',
+          spans: [
+            { kind: 'text', text: 'See also ' },
+            {
+              kind: 'ref',
+              text: 'the when attribute',
+              target: 'the-when-attribute',
+              children: [{ kind: 'text', text: 'the when attribute' }],
+            },
+            { kind: 'text', text: '.' },
+          ],
+        },
       ],
     },
     {
@@ -161,6 +180,29 @@ const CONFIGURATION_REFERENCE = {
               kind: 'link',
               text: 'Read it on circleci.com',
               url: 'https://circleci.com/docs/reference/configuration-reference/',
+            },
+          ],
+        },
+        // Padding, so the heading below starts out of view -- the point of
+        // `mid-section-anchor.spec.ts`'s assertion is that following the
+        // cross-reference actually scrolls the reading column, not merely
+        // that the right section is shown.
+        ...Array.from({ length: 12 }, (_, i) => ({
+          kind: 'paragraph',
+          spans: [{ kind: 'text', text: `Filler paragraph ${i + 1}.` }],
+        })),
+        {
+          kind: 'heading',
+          level: 4,
+          id: 'the-when-attribute',
+          spans: [{ kind: 'text', text: 'The when attribute' }],
+        },
+        {
+          kind: 'paragraph',
+          spans: [
+            {
+              kind: 'text',
+              text: 'By default, CircleCI executes job steps one at a time.',
             },
           ],
         },
@@ -479,14 +521,53 @@ test.describe('Reference pane: the built-in guides (issue #104)', () => {
       page.getByText(/Generates and stores a cache of a file/),
     ).toBeVisible();
 
-    // An upstream link, by contrast, stays a real outbound link.
+    // An upstream link, by contrast, stays a real outbound link -- and,
+    // issue #10, is now visibly marked as one, which the cross-reference
+    // button above is not.
     await selectSection(page, 'version');
-    await expect(
-      page.getByRole('link', { name: 'Reusable Configuration' }),
-    ).toHaveAttribute(
+    const outboundLink = page.getByRole('link', {
+      name: 'Reusable Configuration',
+    });
+    await expect(outboundLink).toHaveAttribute(
       'href',
       'https://circleci.com/docs/reference/reusing-config/',
     );
+    await expect(outboundLink).toContainText('↗');
+    await expect(crossRef).not.toContainText('↗');
+  });
+
+  // Issue #19's mid-section-anchor gap: `<<the-when-attribute>>` resolves to
+  // the `savecache` *section* in `anchors` (as far as this was resolvable
+  // before this issue), but the heading that anchor actually names sits well
+  // past the section's own top. Following the reference must land the reader
+  // on the heading itself, not merely open the right section and leave them
+  // to scroll for it by hand.
+  test('a cross-reference to a mid-section anchor scrolls to the exact heading, not just its section', async ({
+    page,
+  }) => {
+    await mockHostApi(page);
+    await mockSchema(page);
+    await mockGuides(page);
+    await page.goto('/');
+    await openReference(page);
+    await openGuides(page);
+
+    await selectSection(page, 'version');
+    const midSectionRef = page
+      .getByTestId('guide-content')
+      .getByRole('button', { name: 'the when attribute' });
+    await expect(midSectionRef).toBeVisible();
+    await midSectionRef.click();
+
+    const heading = page.getByRole('heading', {
+      name: 'The when attribute',
+      exact: true,
+    });
+    await expect(heading).toBeVisible();
+    // The real assertion: the heading itself is scrolled into the reading
+    // column's viewport, not just present somewhere below the fold of a
+    // section that merely opened at its own top.
+    await expect(heading).toBeInViewport();
   });
 
   test('search spans every guide, not only the selected one', async ({

@@ -220,6 +220,67 @@ func TestParseGuideDuplicateAnchorsStayUniquePerGuide(t *testing.T) {
 	assert.Equal(t, guide.Sections[1].URL, "https://circleci.com/docs/reference/configuration-reference/#steps")
 }
 
+// TestParseGuideMidSectionAnchorsPinToTheirOwnBlock is issue #19's second
+// gap: upstream attaches `[#id]` to a level-4 heading nested inside a
+// section (`the-when-attribute`, `jobfilters` and `type` in the real
+// configuration reference all do this), and a cross-reference to it must
+// resolve to *that block*, not just land the reader at the top of the
+// enclosing section.
+func TestParseGuideMidSectionAnchorsPinToTheirOwnBlock(t *testing.T) {
+	t.Parallel()
+
+	source := "= T\n\n== Steps\n\nIntro to steps.\n\n[#the-when-step]\n==== The when step\n\nDetails about when.\n\nMore prose after.\n"
+	guide := parseGuide("g", "reference", "ROOT", "configuration-reference", "", []byte(source), nil)
+	assert.Assert(t, is.Len(guide.Sections, 1))
+	section := guide.Sections[0]
+
+	// The heading block itself carries the precise anchor as its own ID --
+	// already true before this issue -- and it is *that* ID, not the
+	// section's, that a reader wants scrolled into view.
+	heading := findBlock(section.Blocks, KindHeading)
+	assert.Assert(t, heading != nil)
+	assert.Equal(t, heading.ID, "the-when-step")
+
+	// Guide.Anchors is still the section-level fallback (unchanged): a
+	// caller that only wants "which section" never had to change.
+	assert.Equal(t, guide.Anchors["the-when-step"], section.ID)
+}
+
+// TestParseGuideBlockLevelAnchorOnOrdinaryBlockGetsItsOwnID is the same
+// mechanism exercised against a plain paragraph rather than a heading --
+// upstream's *current* three vendored pages happen to only ever attach
+// `[#id]` to headings (verified by hand against every `[#...]` line in
+// internal/guides/snapshot while writing this), but the parser must not
+// silently drop an anchor upstream chooses to put somewhere else tomorrow.
+func TestParseGuideBlockLevelAnchorOnOrdinaryBlockGetsItsOwnID(t *testing.T) {
+	t.Parallel()
+
+	source := "= T\n\n== Section\n\nBefore.\n\n[#a-plain-paragraph]\nThe anchored paragraph itself.\n\nAfter.\n"
+	guide := parseGuide("g", "reference", "ROOT", "configuration-reference", "", []byte(source), nil)
+	assert.Assert(t, is.Len(guide.Sections, 1))
+	section := guide.Sections[0]
+	assert.Assert(t, is.Len(section.Blocks, 3))
+
+	assert.Equal(t, section.Blocks[0].Kind, KindParagraph)
+	assert.Equal(t, section.Blocks[0].ID, "")
+	assert.Equal(t, section.Blocks[1].Kind, KindParagraph)
+	assert.Equal(t, section.Blocks[1].ID, "a-plain-paragraph")
+	assert.Equal(t, section.Blocks[2].Kind, KindParagraph)
+	assert.Equal(t, section.Blocks[2].ID, "")
+
+	assert.Equal(t, guide.Anchors["a-plain-paragraph"], section.ID)
+}
+
+// findBlock returns the first block of kind in blocks, or nil.
+func findBlock(blocks []Block, kind BlockKind) *Block {
+	for i := range blocks {
+		if blocks[i].Kind == kind {
+			return &blocks[i]
+		}
+	}
+	return nil
+}
+
 func TestParseCodeBlocksAreVerbatim(t *testing.T) {
 	t.Parallel()
 

@@ -122,6 +122,35 @@ export const DOCS_LINKS = {
       url: 'https://circleci.com/docs/guides/optimize/caching/#restoring-cache',
     },
   },
+  /**
+   * Issue #19: the inspector's `StepsSection` (shared by a job's own `steps:`
+   * and, per issue #37, a workflow entry's `pre-steps:`/`post-steps:`) had a
+   * docs link on every *individual* step type once it was expanded
+   * (`stepDocsUrl`, issue #78) but none on the section itself -- so a reader
+   * who has not added any steps yet, or who wants "what is a step, generally"
+   * rather than "what does `save_cache` take", had nothing to click. This is
+   * the configuration reference's own `steps` section (`== *`steps`*`), the
+   * page the per-keyword anchors in `STEP_DOCS_ANCHORS` all live inside.
+   */
+  jobs: {
+    steps: {
+      label: 'The steps key',
+      url: 'https://circleci.com/docs/reference/configuration-reference/#steps',
+    },
+    /**
+     * `pre-steps`/`post-steps` (issue #37) are a *different* documented
+     * section from `steps` above -- upstream's own `[#pre-steps-and-
+     * post-steps]` anchor, not a fragment of the plain `steps` one -- so the
+     * inspector's Pre-steps/Post-steps sections must not reuse `steps`'s
+     * link: doing so would point at the wrong prose for the specific
+     * question a reader of *that* section actually has ("what are these
+     * two, specifically" rather than "what is a step, generally").
+     */
+    prePostSteps: {
+      label: 'pre-steps and post-steps',
+      url: 'https://circleci.com/docs/reference/configuration-reference/#pre-steps-and-post-steps',
+    },
+  },
   executors: {
     docker: {
       label: 'Docker execution environment',
