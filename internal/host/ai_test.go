@@ -852,6 +852,16 @@ func TestServer_AIChat_NoMCPConfigured_OmitsMCPServersAndGroundingPrompt(t *test
 // paragraph is appended to the system prompt, and CompleteResult.Sources
 // comes back in the JSON response as {url, title} objects whose titles were
 // resolved offline from the vendored docs snapshot (issue #156).
+//
+// "what is a resource class?" is *also* a question issue #22's local
+// grounding answers on its own -- with no MCP server at all, the vendored
+// configuration reference's own `resource_class` section would already
+// clear minGroundingScore on a title match. So this test's Sources list
+// legitimately contains more than the one URL the fake provider's MCP tool
+// call returned: this pins that the MCP-returned citation is still present
+// and still titled, not that it is the *only* one, which would be testing
+// for the absence of a feature this same file's local-grounding tests exist
+// to prove works.
 func TestServer_AIChat_MCPConfigured_AttachesServerAndGroundingPromptAndSources(t *testing.T) {
 	store := newFakeKeyStore()
 	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
@@ -900,11 +910,20 @@ func TestServer_AIChat_MCPConfigured_AttachesServerAndGroundingPromptAndSources(
 		} `json:"sources"`
 	}
 	assert.NilError(t, json.Unmarshal([]byte(chatBody), &got))
-	assert.Assert(t, is.Len(got.Sources, 1))
-	assert.Equal(t, got.Sources[0].URL, "https://circleci.com/docs/reference/configuration-reference/#resourceclass")
+	assert.Assert(t, len(got.Sources) >= 1, "body=%s", chatBody)
+	var mcpSource *struct {
+		URL   string `json:"url"`
+		Title string `json:"title"`
+	}
+	for i := range got.Sources {
+		if got.Sources[i].URL == "https://circleci.com/docs/reference/configuration-reference/#resourceclass" {
+			mcpSource = &got.Sources[i]
+		}
+	}
+	assert.Assert(t, mcpSource != nil, "expected the MCP tool call's own citation to survive alongside any local-grounding ones: %s", chatBody)
 	// The title comes from the vendored AsciiDoc, with no network call at all --
 	// see guides.NewCitationResolver (issue #156).
-	assert.Assert(t, got.Sources[0].Title != "", "expected a locally resolved title: %s", chatBody)
+	assert.Assert(t, mcpSource.Title != "", "expected a locally resolved title: %s", chatBody)
 }
 
 // TestServer_AIChat_NormalizesCitations is issue #156's citation policy at the
@@ -912,6 +931,13 @@ func TestServer_AIChat_MCPConfigured_AttachesServerAndGroundingPromptAndSources(
 // image, an unmappable asset never reaches the UI at all, and the duplicate
 // that mapping creates is collapsed. The policy's own edge cases are covered in
 // internal/guides; this pins that the handler actually applies it.
+//
+// "how do I enable dynamic config?" also clears issue #22's local-grounding
+// threshold on its own -- title and body terms both match the dynamic-config
+// guide -- so this doubles as the dedup case that matters most for combining
+// the two mechanisms: the *same* dynamic-config page reaches Normalize twice,
+// once as this test's own direct citation and once (or more) via
+// selectGroundingPassages, and must still surface exactly once.
 func TestServer_AIChat_NormalizesCitations(t *testing.T) {
 	store := newFakeKeyStore()
 	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
@@ -951,11 +977,18 @@ func TestServer_AIChat_NormalizesCitations(t *testing.T) {
 		} `json:"sources"`
 	}
 	assert.NilError(t, json.Unmarshal([]byte(body), &got))
-	assert.Assert(t, is.Len(got.Sources, 1), "body=%s", body)
-	assert.Equal(t, got.Sources[0].URL, "https://circleci.com/docs/guides/orchestrate/dynamic-config/")
-	assert.Assert(t, got.Sources[0].Title != "", "body=%s", body)
 	assert.Assert(t, !strings.Contains(body, ".png"), "an image asset must never be offered as a source: %s", body)
 	assert.Assert(t, !strings.Contains(body, ".css"), "a stylesheet must never be offered as a source: %s", body)
+
+	matches := 0
+	for _, source := range got.Sources {
+		if source.URL != "https://circleci.com/docs/guides/orchestrate/dynamic-config/" {
+			continue
+		}
+		matches++
+		assert.Assert(t, source.Title != "", "body=%s", body)
+	}
+	assert.Equal(t, matches, 1, "the dynamic-config page was cited both directly and via the image mapping (and possibly local grounding too); it must still appear exactly once: %s", body)
 }
 
 // TestServer_AIChat_MCPStorageFailure_DegradesToUnconfigured is the

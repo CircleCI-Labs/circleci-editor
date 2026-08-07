@@ -287,6 +287,26 @@ type aiChatMessage struct {
 	Content string `json:"content"`
 }
 
+// lastUserMessage returns the latest user turn in messages -- the
+// "question" half of what guides.SelectPassages grounds on (issue #22's
+// "relevant to the question and the open config"). Falls back to the very
+// last message when none is explicitly role "user" (a malformed or
+// test-constructed request): grounding on the most recent thing said is
+// closer to right than grounding on nothing merely because the shape is
+// unusual, and SelectPassages already degrades to zero passages on its own
+// when nothing in whatever string it's given matches anything.
+func lastUserMessage(messages []aiChatMessage) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == string(ai.RoleUser) {
+			return messages[i].Content
+		}
+	}
+	if len(messages) > 0 {
+		return messages[len(messages)-1].Content
+	}
+	return ""
+}
+
 // mcpDocsURLKey and mcpDocsTokenKey are the keystore.Store ids under which
 // this app's single, optional docs-grounding MCP server (issue #103's Kapa
 // docs server, or any other remote MCP server BYO-pointed here) is stored
@@ -617,20 +637,28 @@ type aiChatResponse struct {
 	Content   string         `json:"content,omitempty"`
 	Model     string         `json:"model,omitempty"`
 	Usage     aiUsagePayload `json:"usage,omitempty"`
-	// Sources lists links the provider's MCP tool calls turned up (see
-	// ai.CompleteResult.Sources), rendered by the frontend as a "Sources"
-	// footer independent of whatever the model's own reply text says --
-	// issue #103's "citations in replies" without depending on the model
-	// remembering to write a Markdown link. Always empty when no MCP
-	// server is configured, or when one is configured but the model didn't
-	// end up calling it for this reply.
+	// Sources lists links worth showing under the reply, rendered by the
+	// frontend as a "Sources" footer independent of whatever the model's
+	// own reply text says -- issue #103's "citations in replies" without
+	// depending on the model remembering to write a Markdown link. Two
+	// origins, concatenated, grounding-selected ones first:
+	//
+	//   - The vendored documentation this host itself selected and placed
+	//     in the system prompt (issue #22, see selectGroundingPassages) --
+	//     certain to have been shown to the model, the same certainty
+	//     web/src/lib/ai/deterministicSources.ts's app-attached rows carry
+	//     for a diagnostic. Present whether or not any MCP server is
+	//     configured, because selection needs neither a credential nor a
+	//     network call.
+	//   - Whatever the provider's own MCP tool calls turned up (see
+	//     ai.CompleteResult.Sources), when a docs-grounding MCP server is
+	//     configured and the model chose to use it.
 	//
 	// Every entry has been through guides.CitationResolver (issue #156): an
 	// image asset is either remapped to the page that shows it or dropped, a
-	// non-page asset is dropped, duplicates are collapsed, and a title is
-	// attached when the vendored AsciiDoc could resolve one offline. The list
-	// is therefore a subset of (and never longer than) what the provider
-	// returned.
+	// non-page asset is dropped, duplicates are collapsed (so a grounding
+	// selection the provider also cited is never listed twice), and a title
+	// is attached when the vendored AsciiDoc could resolve one offline.
 	Sources []aiChatSource `json:"sources,omitempty"`
 	// Grounded reports whether a docs-grounding MCP server was actually
 	// attached to this request. Issue #103 requires the assistant to *say*
@@ -729,8 +757,16 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		mcpServers = []ai.MCPServer{mcpServer}
 	}
 
+	// Issue #22: the vendored docs snapshot this host already has parsed in
+	// memory for the Reference pane and for citations() below is grounding
+	// this app can add to every request, MCP or not -- it needs no
+	// credential and no network, so unlike mcpServer above it is never
+	// "configured" or "unavailable", only ever "matched something" or
+	// "didn't". See guides.SelectPassages for the selection policy.
+	passages, groundingProvenance := s.selectGroundingPassages(lastUserMessage(req.Messages), req.Context.ConfigText)
+
 	result, err := provider.Complete(ctx, key, provider.DefaultModel(), ai.CompleteRequest{
-		System:     buildSystemPrompt(req.Context, mcpConfigured, groundingReason != ""),
+		System:     buildSystemPrompt(req.Context, mcpConfigured, groundingReason != "", passages, groundingProvenance),
 		Messages:   messages,
 		MCPServers: mcpServers,
 	})
@@ -744,30 +780,63 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	groundingURLs := make([]string, len(passages))
+	for i, p := range passages {
+		groundingURLs[i] = p.URL
+	}
+
 	writeJSON(w, http.StatusOK, aiChatResponse{
 		Available:       true,
 		Content:         result.Content,
 		Model:           result.Model,
 		Usage:           aiUsagePayload{InputTokens: result.InputTokens, OutputTokens: result.OutputTokens},
-		Sources:         s.citations(result.Sources),
+		Sources:         s.citations(groundingURLs, result.Sources),
 		Grounded:        mcpConfigured,
 		GroundingReason: groundingReason,
 	})
 }
 
-// citations resolves the provider's raw source URLs into the citations the
-// pane shows: image assets remapped to the page that shows them, other assets
-// dropped, duplicates collapsed, and titles taken from the vendored docs
-// snapshot where it has one (issue #156). See guides.CitationResolver for the
-// policy and for why none of this fetches anything.
+// selectGroundingPassages is issue #22's selection step: the vendored
+// documentation worth showing the model for this turn, drawn from the exact
+// s.guides the Reference pane and citations() below already read -- no
+// separate fetch, no separate cache. Degrades the same way citations() does
+// when there is no usable snapshot (nil guides, or one whose embedded copy
+// somehow failed to parse): zero passages, never a failed chat request over
+// a feature that is supposed to need nothing but memory already resident in
+// this process.
+func (s *Server) selectGroundingPassages(question, configText string) ([]guides.Passage, guides.Provenance) {
+	if s.guides == nil {
+		return nil, guides.Provenance{}
+	}
+	parsed, provenance, err := s.guides.Guides()
+	if err != nil || len(parsed) == 0 {
+		return nil, provenance
+	}
+	return guides.SelectPassages(parsed, question, configText), provenance
+}
+
+// citations resolves raw source URLs into the citations the pane shows:
+// image assets remapped to the page that shows them, other assets dropped,
+// duplicates collapsed, and titles taken from the vendored docs snapshot
+// where it has one (issue #156). See guides.CitationResolver for the policy
+// and for why none of this fetches anything.
+//
+// groundingURLs are this host's own selection (issue #22, see
+// selectGroundingPassages) -- passages actually placed in the system prompt,
+// so they are certain to be relevant in the same sense
+// web/src/lib/ai/deterministicSources.ts's app-attached rows are certain,
+// as opposed to sources merely retrieved by a model's own tool call. They
+// are listed first for that reason. Normalize's own deduplication means a
+// grounding URL the provider also happened to cite (sources) is never
+// listed twice.
 //
 // Built per request rather than cached on the Server: the guide set can be
 // replaced under us by the cache's background refresh (see guides.Cache), and
-// indexing three already-parsed pages is trivial next to the provider call
-// that just completed. A host with no guides cache, or one whose snapshot
-// failed to parse, still gets the asset filtering and deduplication -- just
-// with no titles to add.
-func (s *Server) citations(sources []ai.Source) []aiChatSource {
+// indexing twenty-two already-parsed pages is trivial next to the provider
+// call that just completed. A host with no guides cache, or one whose
+// snapshot failed to parse, still gets the asset filtering and
+// deduplication -- just with no titles to add.
+func (s *Server) citations(groundingURLs []string, sources []ai.Source) []aiChatSource {
 	var parsed []guides.Guide
 	if s.guides != nil {
 		if gs, _, err := s.guides.Guides(); err == nil {
@@ -775,9 +844,10 @@ func (s *Server) citations(sources []ai.Source) []aiChatSource {
 		}
 	}
 
-	urls := make([]string, len(sources))
-	for i, source := range sources {
-		urls[i] = source.URL
+	urls := make([]string, 0, len(groundingURLs)+len(sources))
+	urls = append(urls, groundingURLs...)
+	for _, source := range sources {
+		urls = append(urls, source.URL)
 	}
 
 	resolved := guides.NewCitationResolver(parsed).Normalize(urls)
@@ -845,18 +915,87 @@ const mcpGroundingPrompt = `You also have access to a documentation search tool 
 // TestServer_AIChat_NoMCPConfigured_OmitsMCPServersAndGroundingPrompt pins.
 const mcpGroundingUnavailablePrompt = `A documentation search tool connected to CircleCI's official docs is configured for this editor, but it is unavailable for this reply -- the sign-in to it has expired or been rejected. You are therefore answering from training data alone, which may be stale. When the user asks how CircleCI itself behaves, say plainly that you are answering without docs grounding and that they can restore it by signing in again from the AI pane's settings. Do not imply any part of your answer is sourced.`
 
+// groundingPreamble introduces the "Documentation context" section
+// buildSystemPrompt appends only when guides.SelectPassages actually found
+// something for this turn (issue #22). It states three things a passage's
+// own prose cannot say about itself: that this text is CircleCI's own
+// documentation rather than the user's repository -- so it is never
+// confused with the file-contents disclosure aiChatContext's own doc
+// comment describes -- that a citation must quote one of the URLs given
+// rather than invent one (the same rule actionSchemaPrompt states for a
+// proposed edit: never fabricate something that looks like it came from
+// this app), and that a vendored snapshot only refreshes on a TTL, so its
+// stated age (appended by groundingContext) is something to defer to
+// rather than assume away.
+const groundingPreamble = `Documentation context: excerpts from this editor's own vendored copy of CircleCI's official documentation, selected because they relate to your question or to keys already used in the open config below. This is CircleCI's documentation, not the user's repository. When your answer relies on one of these excerpts, you may cite its "Source" URL verbatim as a Markdown link -- never invent a documentation URL that is not listed here.`
+
+// groundingContext renders passages (already selected and budgeted by
+// guides.SelectPassages) into the system-prompt block groundingPreamble
+// introduces, dated by snapshotAgeNotice. Returns "" when passages is empty
+// so buildSystemPrompt can omit the section entirely rather than printing an
+// empty one -- the same "no field, not an empty field" convention
+// aiChatResponse.Sources already follows on the way out.
+func groundingContext(passages []guides.Passage, prov guides.Provenance) string {
+	if len(passages) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(groundingPreamble)
+	b.WriteString(" ")
+	b.WriteString(snapshotAgeNotice(prov))
+	b.WriteString("\n\n")
+	for _, p := range passages {
+		if p.SectionTitle != "" {
+			fmt.Fprintf(&b, "### %s -- %s\n", p.GuideTitle, p.SectionTitle)
+		} else {
+			fmt.Fprintf(&b, "### %s\n", p.GuideTitle)
+		}
+		b.WriteString(p.Text)
+		fmt.Fprintf(&b, "\nSource: %s\n\n", p.URL)
+	}
+	return b.String()
+}
+
+// snapshotAgeNotice states what this process can actually verify about the
+// documentation above's own age -- mirroring
+// web/src/panes/docs/GuideView.tsx's ProvenanceFooter, which for the
+// identical reason never claims a vendored page is "current": this host
+// cannot know whether upstream has changed since prov.Commit was pinned,
+// only how long it has been since the last check for that. Issue #22 asks
+// specifically that a stale snapshot be able to say so rather than
+// presenting vendored prose as current unconditionally -- prov.Stale() is
+// the exact threshold guides.Cache itself refreshes on (see that method's
+// doc comment), so this can never disagree with what actually governs
+// whether a background refresh is overdue.
+func snapshotAgeNotice(prov guides.Provenance) string {
+	if prov.CommittedAt.IsZero() {
+		return "(This snapshot's own vendoring date is unavailable, so its age cannot be stated.)"
+	}
+	dated := fmt.Sprintf("This snapshot was vendored from %s, pinned to a commit dated %s.", prov.Repo, prov.CommittedAt.Format("2006-01-02"))
+	if prov.Stale() {
+		return dated + " It has not been checked against upstream in over a week (see the Reference pane's Guides tab), so treat it as the best available copy rather than necessarily current -- CircleCI may have published changes since."
+	}
+	return dated
+}
+
 // buildSystemPrompt assembles the system prompt sent with every chat
 // request: the assistant's role, the action-proposal protocol
-// (actionSchemaPrompt), one of the two docs-grounding paragraphs when
-// relevant, and the repo-aware context the frontend supplied. Everything
-// after those comes from ctx, which in turn comes only from the config file
+// (actionSchemaPrompt), one of the two MCP docs-grounding paragraphs when
+// relevant, the vendored-documentation context this host selected on its
+// own (issue #22, see groundingContext), and the repo-aware context the
+// frontend supplied. Everything from ctx comes only from the config file
 // already open in the editor (see aiChatContext's doc comment) -- this
-// function never reads the filesystem itself.
+// function never reads the filesystem itself, and passages/provenance come
+// only from this process's own already-parsed guides snapshot (see
+// selectGroundingPassages) -- neither is a second place this function
+// reaches out for something new.
 //
 // mcpConfigured and groundingDegraded are mutually exclusive by
 // construction: loadMCPConfig returns a non-empty reason only when it is
-// also returning configured=false.
-func buildSystemPrompt(ctx aiChatContext, mcpConfigured, groundingDegraded bool) string {
+// also returning configured=false. passages is independent of both: it can
+// be non-empty whether or not any MCP server is configured at all, which is
+// the point of issue #22 -- this grounding needs neither.
+func buildSystemPrompt(ctx aiChatContext, mcpConfigured, groundingDegraded bool, passages []guides.Passage, provenance guides.Provenance) string {
 	var b strings.Builder
 	b.WriteString("You are an assistant embedded in the CircleCI Config Editor, a local tool for editing a single .circleci/config.yml file. Help the user understand and improve the CircleCI configuration currently open in their editor.\n\n")
 	b.WriteString(actionSchemaPrompt)
@@ -867,6 +1006,10 @@ func buildSystemPrompt(ctx aiChatContext, mcpConfigured, groundingDegraded bool)
 	} else if groundingDegraded {
 		b.WriteString(mcpGroundingUnavailablePrompt)
 		b.WriteString("\n\n")
+	}
+	if docs := groundingContext(passages, provenance); docs != "" {
+		b.WriteString(docs)
+		b.WriteString("\n")
 	}
 
 	if ctx.ConfigPath != "" {

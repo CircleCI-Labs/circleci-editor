@@ -362,9 +362,21 @@ from that button.
 . *The conversation so far*, so a follow-up question makes sense. Provider-side
 notices this editor generated itself are excluded, because neither side of the
 conversation said them.
+. *A handful of excerpts from this editor's own vendored copy of CircleCI's
+documentation* (issue #22), selected because they relate to your question or to
+a key your open config already sets -- never all of it, and never more than a
+few thousand tokens' worth. This is the same offline snapshot the Reference
+pane's `Guides` tab renders from, embedded in the binary with no separate fetch:
+grounding a reply in CircleCI's own words instead of the model's memory of them
+adds *documentation* to the request, not more of your repository, and it needs
+no credential and no network of its own to select. Each excerpt is labelled with
+which page it came from and how old the snapshot is, and it is cited back to you
+in the reply's "Sources" list so you can open the real page yourself. When
+nothing in the corpus matches your question or config, nothing is added -- there
+is no fallback to "the nearest few sections regardless".
 
-Nothing else. Not your `CIRCLE_TOKEN`, not your git history, not the contents of
-any pane other than the config.
+Nothing else about your repository. Not your `CIRCLE_TOKEN`, not your git
+history, not the contents of any pane other than the config.
 
 If you have configured the optional docs MCP server in the AI pane's settings,
 its URL is passed to Anthropic along with the request, and Anthropic connects to

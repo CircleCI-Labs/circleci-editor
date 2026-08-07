@@ -68,6 +68,14 @@ the repository is read for it. CircleCI is not in that path and neither are we.
 The Reference pane in the app carries the disclosure in full, under *What the AI
 pane sends, and to whom*.
 
+A reply can also be grounded in a handful of excerpts from this editor's own
+vendored copy of CircleCI's documentation — the same offline snapshot the
+Reference pane's Guides tab renders from, selected because they relate to your
+question or a key your config already sets. That's documentation being added
+to the request, never more of your repository, and it needs no credential and
+no network of its own to select: `api.anthropic.com` is still the only host
+this adds to, not a new row in the table above.
+
 ## Screenshots
 
 The Config, Workflow Graph, and Palette panes together, with a job
