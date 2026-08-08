@@ -102,6 +102,12 @@ type Fetcher struct {
 	BaseURL string
 	// APIBaseURL overrides the commit-resolution endpoint, for tests.
 	APIBaseURL string
+	// TreeAPIURL overrides the tree-listing endpoint ListTree calls, for
+	// tests. Separate from APIBaseURL because the two hit different GitHub
+	// API shapes (a commit lookup vs. a recursive tree listing) and a test
+	// exercising both needs to point them at different handlers on the same
+	// fake server.
+	TreeAPIURL string
 }
 
 func (f *Fetcher) client() *http.Client {

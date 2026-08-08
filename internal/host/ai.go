@@ -956,6 +956,15 @@ func (s *Server) selectGroundingPassages(question, configText string) ([]guides.
 // call that just completed. A host with no guides cache, or one whose
 // snapshot failed to parse, still gets the asset filtering and
 // deduplication -- just with no titles to add.
+//
+// guides.LoadImageIndex (issue #19's remaining piece) is applied on top, so
+// an image cited from any page circleci-docs publishes -- not only the
+// twenty vendored here -- can resolve, provided it was there the last time
+// cmd/refresh-image-index ran. It costs nothing to try even when it has
+// nothing to add: the index is embedded and cached after its first parse
+// (see LoadImageIndex), and a load failure is swallowed the same way a
+// missing guides cache already is above -- fewer citations, never a crash,
+// never a guessed one.
 func (s *Server) citations(groundingURLs []string, sources []ai.Source) []aiChatSource {
 	var parsed []guides.Guide
 	if s.guides != nil {
@@ -970,7 +979,12 @@ func (s *Server) citations(groundingURLs []string, sources []ai.Source) []aiChat
 		urls = append(urls, source.URL)
 	}
 
-	resolved := guides.NewCitationResolver(parsed).Normalize(urls)
+	resolver := guides.NewCitationResolver(parsed)
+	if idx, err := guides.LoadImageIndex(); err == nil {
+		resolver.AddImageIndex(idx)
+	}
+
+	resolved := resolver.Normalize(urls)
 	if len(resolved) == 0 {
 		return nil
 	}

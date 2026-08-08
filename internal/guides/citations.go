@@ -142,6 +142,33 @@ func NewCitationResolver(gs []Guide) *CitationResolver {
 	return r
 }
 
+// AddImageIndex extends r with the wider basename -> URL mapping
+// cmd/refresh-image-index builds by walking every page in circleci-docs, not
+// just the twenty gs vendors as prose (issue #19's remaining piece: "Image
+// indexing beyond the vendored guides"). idx typically comes from
+// LoadImageIndex.
+//
+// Applied *after* NewCitationResolver's own indexing and using the exact same
+// "first claim wins" rule as the imagePages loop above: a basename the
+// vendored guides already map keeps that mapping. That is not merely
+// consistent with the existing convention, it is necessary -- the vendored
+// mapping points at a page this resolver can also title (via r.titles), and
+// idx carries no titles at all, so letting idx displace it would trade a
+// titled citation for an untitled one covering the identical basename.
+//
+// A collision the wider index had to resolve on its own (two upstream pages
+// both showing one basename, neither of them vendored) was already decided
+// when idx was built -- see imageIndexSeeds's doc comment -- so there is
+// nothing left to decide here; this only ever adds a mapping the vendored
+// guides did not already have one for.
+func (r *CitationResolver) AddImageIndex(idx ImageIndex) {
+	for basename, page := range idx.Images {
+		if _, taken := r.imagePages[basename]; !taken {
+			r.imagePages[basename] = page
+		}
+	}
+}
+
 // Normalize turns the raw citation URLs a provider returned into the citations
 // to show, in the order they arrived. It:
 //

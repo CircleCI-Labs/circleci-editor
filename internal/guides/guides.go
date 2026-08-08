@@ -101,6 +101,20 @@
 // Sources sufficient, and what stops a widened snapshot quietly becoming
 // nineteen frozen copies and one that updates. TestRefreshCoversEveryUpstream
 // Source pins it (issue #176).
+//
+// # The image index: wider than the snapshot, on purpose
+//
+// A citation naming an image asset is remapped to the docs page that shows
+// it (see citations.go, issue #156), but Guide.Images only ever knows the
+// images on the twenty pages above -- Sources' selection rule is about what
+// this pane *shows*, not about which pages have pictures. `task guides:
+// refresh-image-index` (see imageindex.go and imageindex_build.go) builds a
+// separate, much smaller artifact -- a basename to URL map with no prose in
+// it at all -- covering every page circleci-docs publishes, and
+// CitationResolver.AddImageIndex layers it in as a fallback. It is
+// deliberately a *different* command from guides:refresh, run on its own
+// schedule: widening which images a citation can resolve against is not the
+// same decision as re-vendoring prose, and must not require it.
 package guides
 
 import (
