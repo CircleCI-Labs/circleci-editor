@@ -580,6 +580,14 @@ func (p *parser) parseBlocks(stop func() bool) []Block {
 // noteImage records the basename of the image an `image::target[attrs]` macro
 // references, so NewCitationResolver can answer "which page shows
 // workspace.png?" offline.
+func (p *parser) noteImage(line string) {
+	if base, ok := imageMacroBasename(line); ok {
+		p.images[base] = true
+	}
+}
+
+// imageMacroBasename extracts the lowercased basename an `image::target[...]`
+// macro's target refers to, or ok=false when the macro names nothing usable.
 //
 // Only the basename is kept, deliberately. The macro's target is an Antora
 // resource ID whose coordinates are relative to the *including* file
@@ -592,19 +600,27 @@ func (p *parser) parseBlocks(stop func() bool) []Block {
 // theoretical worry rather than a practical one -- and a collision would
 // merely pick one of two pages that both show the image, which is still
 // strictly better than citing the asset.
-func (p *parser) noteImage(line string) {
+//
+// Factored out of noteImage (rather than kept as a method on *parser) so
+// extractImageBasenames -- cmd/refresh-image-index's own scan of a page's raw
+// source, run without building a parser or a Guide at all -- uses the exact
+// same rule. Two independent readings of what an `image::` macro means would
+// be a second place for the two indexes (this package's per-guide
+// Guide.Images and the wider ImageIndex issue #19 asks for) to quietly
+// disagree about the same file.
+func imageMacroBasename(line string) (string, bool) {
 	target := strings.TrimPrefix(line, "image::")
 	if bracket := strings.IndexByte(target, '['); bracket >= 0 {
 		target = target[:bracket]
 	}
 	target = strings.TrimSpace(target)
 	if target == "" {
-		return
+		return "", false
 	}
 	// An `image::https://example.com/x.png[]` macro points outside the docs
 	// site, so it says nothing about which docs page shows what.
 	if strings.Contains(target, "://") {
-		return
+		return "", false
 	}
 	// Antora coordinates (`component:module:relpath`) precede the path; the
 	// filename is what is wanted, so take the last path element of the last
@@ -614,9 +630,34 @@ func (p *parser) noteImage(line string) {
 	}
 	base := strings.ToLower(path.Base(target))
 	if base == "" || base == "." || base == "/" {
-		return
+		return "", false
 	}
-	p.images[base] = true
+	return base, true
+}
+
+// extractImageBasenames scans raw AsciiDoc source line by line for `image::`
+// macros -- the same trigger the block parser above recognises -- and returns
+// the lowercased basename of every one that names a docs-site image, sorted
+// and deduplicated.
+//
+// Deliberately textual, matching includeTargets' own approach and for the
+// same reason: cmd/refresh-image-index has some 300 pages to check for a
+// picture (see imageindex_build.go's maxIndexFiles comment for the measured
+// count), almost none of which this package renders as prose, so building a
+// full parser and Guide for each just to read Guide.Images back out would be
+// the vendoring issue #19 explicitly asks this feature to avoid.
+func extractImageBasenames(source []byte) []string {
+	seen := map[string]bool{}
+	for _, line := range splitLines(string(source)) {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "image::") {
+			continue
+		}
+		if base, ok := imageMacroBasename(trimmed); ok {
+			seen[base] = true
+		}
+	}
+	return sortedKeys(seen)
 }
 
 // isHeadingLine reports whether line is any `=`-prefixed heading.

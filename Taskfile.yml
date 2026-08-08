@@ -159,6 +159,19 @@ tasks:
       - go run ./internal/guides/cmd/refresh-snapshot
       - go test ./internal/guides/...
 
+  guides:refresh-image-index:
+    desc: Rebuild internal/guides/imageindex/index.json from the head of circleci/circleci-docs
+    cmds:
+      # Rewrites the basename -> canonical-page-URL index covering every page
+      # in circleci-docs that shows an image, not only the twenty vendored as
+      # prose by guides:refresh -- issue #19's remaining piece. Independent of
+      # guides:refresh: this never reads or writes internal/guides/snapshot,
+      # and running one is neither a prerequisite for, nor a side effect of,
+      # running the other. See internal/guides/imageindex_build.go's doc
+      # comment for why.
+      - go run ./internal/guides/cmd/refresh-image-index
+      - go test ./internal/guides/...
+
   config:check:
     desc: |
       Offline structural check of .circleci/config.yml -- no CircleCI API

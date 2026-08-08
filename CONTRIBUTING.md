@@ -259,6 +259,13 @@ here for attribution:
   them drift. `internal/guides/editor/` is this project's own documentation
   about the editor itself, not part of that vendored snapshot, and is
   MIT-licensed like the rest of this repository.
+* **`internal/guides/imageindex/index.json`** rests on the same grant as the
+  snapshot above, but vendors no prose at all: it is a generated map from an
+  image's filename to the canonical `circleci.com/docs` URL of the upstream
+  page that shows it, covering every page in `circleci/circleci-docs`, not
+  only the pages vendored under `internal/guides/snapshot/`. See
+  `internal/guides/imageindex.go`'s doc comment for what it records and why,
+  and `cmd/refresh-image-index` for how it is regenerated.
 
 ## Code of Conduct
 

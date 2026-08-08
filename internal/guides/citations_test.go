@@ -380,6 +380,80 @@ func TestCitationResolver_AgainstTheRealSnapshotAfterWidening(t *testing.T) {
 	assert.Equal(t, collided[0].URL, "https://circleci.com/docs/guides/execution-managed/using-docker/")
 }
 
+// TestCitationResolver_AddImageIndexFillsGapsWithoutDisplacingVendoredMappings
+// is the remaining piece of issue #19 ("Image indexing beyond the vendored
+// guides"), exercised at the level that matters: a citation of an image on a
+// page this pane never vendors as prose now resolves instead of being
+// dropped, while an image the vendored guides already know keeps its
+// titled mapping rather than being displaced by the wider, title-less index.
+func TestCitationResolver_AddImageIndexFillsGapsWithoutDisplacingVendoredMappings(t *testing.T) {
+	t.Parallel()
+
+	resolver := NewCitationResolver(fakeGuides())
+
+	// A basename the vendored guides already map to a page with a title. The
+	// wider index disagrees on purpose (a different, wrong URL) so this test
+	// fails if AddImageIndex is ever changed to let it win.
+	idx := ImageIndex{Images: map[string]string{
+		"shared-diagram.png": "https://circleci.com/docs/guides/execution-managed/using-docker/",
+		"artifacts.png":      "https://circleci.com/docs/guides/optimize/artifacts/",
+	}}
+	resolver.AddImageIndex(idx)
+
+	// The vendored mapping still wins, titled, exactly as before AddImageIndex.
+	got := resolver.Normalize([]string{"https://circleci.com/docs/_images/shared-diagram.png"})
+	assert.DeepEqual(t, got, []Citation{
+		{URL: "https://circleci.com/docs/reference/configuration-reference/", Title: "Configuration reference"},
+	})
+
+	// A basename only the wider index knows now resolves -- with no title,
+	// since ImageIndex carries none: this is the gap #19 asked to close.
+	got = resolver.Normalize([]string{"https://circleci.com/docs/guides/_images/artifacts.png"})
+	assert.DeepEqual(t, got, []Citation{
+		{URL: "https://circleci.com/docs/guides/optimize/artifacts/"},
+	})
+
+	// A basename neither source knows is still dropped, never guessed at a
+	// page -- honest degradation holds after widening exactly as it did
+	// before.
+	got = resolver.Normalize([]string{"https://circleci.com/docs/guides/_images/totally-unknown-basename.png"})
+	assert.Assert(t, is.Len(got, 0), "got=%+v", got)
+}
+
+// TestImageIndex_WidensRealCitationsBeyondTheVendoredGuides runs the same
+// widening against the real, embedded, generated artifact (not a fixture) --
+// the end-to-end proof that cmd/refresh-image-index's output is actually
+// wired up: a real page circleci-docs publishes, which this pane does not
+// vendor as prose, resolves once AddImageIndex is applied and is dropped
+// without it.
+func TestImageIndex_WidensRealCitationsBeyondTheVendoredGuides(t *testing.T) {
+	t.Parallel()
+
+	idx, err := LoadImageIndex()
+	assert.NilError(t, err)
+	assert.Equal(t, idx.Repo, UpstreamRepo)
+	assert.Assert(t, idx.Commit != "", "the generated index carries no commit -- was cmd/refresh-image-index ever run?")
+	assert.Assert(t, len(idx.Images) > 0)
+
+	parsed, err := ParseSnapshot()
+	assert.NilError(t, err)
+
+	// Before widening: a citation of an image on a page this pane does not
+	// vendor -- the artifacts guide, not one of the twenty in Sources -- is
+	// dropped exactly as issue #19 described.
+	before := NewCitationResolver(parsed)
+	assert.Assert(t, is.Len(before.Normalize([]string{"https://circleci.com/docs/guides/_images/artifacts.png"}), 0),
+		"artifacts.png should be unresolvable before widening -- if this now passes, the artifacts guide was added to Sources and this test should name a different unvendored page")
+
+	// After: the same citation resolves to that page's own canonical URL.
+	after := NewCitationResolver(parsed)
+	after.AddImageIndex(idx)
+	got := after.Normalize([]string{"https://circleci.com/docs/guides/_images/artifacts.png"})
+	assert.Assert(t, is.Len(got, 1), "got=%+v", got)
+	assert.Equal(t, got[0].URL, "https://circleci.com/docs/guides/optimize/artifacts/")
+	assert.Equal(t, got[0].Title, "", "the wider index carries no titles -- the frontend derives a label from the URL")
+}
+
 func citationsBlocksText(blocks []Block) string {
 	var out strings.Builder
 	for _, block := range blocks {
