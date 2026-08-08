@@ -37,6 +37,11 @@ func clearCircleEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"CIRCLE_TOKEN",
+		// Cleared for the same reason as CIRCLE_TOKEN, and easy to forget: the
+		// CircleCI CLI sets this for a plugin, so any test asserting "no token"
+		// would silently pick one up when run under `circleci editor` -- or in
+		// any environment that happens to export it.
+		"CIRCLECI_TOKEN",
 		"CIRCLE_HOST",
 		"CIRCLE_PROJECT_ID",
 		"CIRCLE_VCS_TYPE",
@@ -146,4 +151,37 @@ func TestEnvironment_ProjectSlug(t *testing.T) {
 			assert.Equal(t, env.ProjectSlug(), tc.wantSlug)
 		})
 	}
+}
+
+// TestEnvironment_TokenFallsBackToCIRCLECI_TOKEN pins the fix for the bug that
+// made running as a CLI plugin lose every token-gated feature: the CircleCI CLI
+// passes its credentials to a plugin as CIRCLECI_TOKEN, and this host read only
+// CIRCLE_TOKEN.
+func TestEnvironment_TokenFallsBackToCIRCLECI_TOKEN(t *testing.T) {
+	clearCircleEnv(t)
+	t.Setenv("CIRCLECI_TOKEN", "from-the-cli")
+
+	env := host.LoadEnvironment()
+	assert.Assert(t, env.HasToken(), "the CLI's own variable must supply a token")
+}
+
+// TestEnvironment_CIRCLE_TOKEN_WinsOverCIRCLECI_TOKEN pins the precedence: the
+// variable a user exports on purpose outranks the one they inherited.
+func TestEnvironment_CIRCLE_TOKEN_WinsOverCIRCLECI_TOKEN(t *testing.T) {
+	clearCircleEnv(t)
+	t.Setenv("CIRCLECI_TOKEN", "from-the-cli")
+	t.Setenv("CIRCLE_TOKEN", "exported-by-hand")
+
+	env := host.LoadEnvironment()
+	assert.Assert(t, env.HasToken())
+	assert.Equal(t, env.Token, "exported-by-hand")
+}
+
+// TestEnvironment_NeitherTokenSet keeps the honest "no token" path intact, since
+// the whole point of the banner warning is that it is accurate.
+func TestEnvironment_NeitherTokenSet(t *testing.T) {
+	clearCircleEnv(t)
+
+	env := host.LoadEnvironment()
+	assert.Assert(t, !env.HasToken())
 }

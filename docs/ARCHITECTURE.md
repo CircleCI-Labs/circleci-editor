@@ -64,7 +64,7 @@ and it was accepted deliberately.
 
 The CircleCI CLI has a plugin mechanism: any executable named
 `circleci-<name>` found on `PATH` becomes runnable as `circleci <name>`,
-and the CLI injects `CIRCLE_TOKEN`, `CIRCLE_HOST`, and project metadata into
+and the CLI injects `CIRCLECI_TOKEN`, `CIRCLE_HOST`, and project metadata into
 its environment. This project's binary is named `circleci-editor` for
 exactly that reason — see `internal/host/env.go`'s `LoadEnvironment`, which
 reads those same variable names. There is no CircleCI-specific registration
