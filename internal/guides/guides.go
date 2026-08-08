@@ -604,6 +604,22 @@ func ExcludedPathReason(repoPath string) string {
 		// out rather than approximated.
 		case segment == "server-admin", strings.HasPrefix(segment, "server-admin-"):
 			return "a server-admin component: ten near-identical versions that would drown config-authoring answers"
+		// Docs-about-docs: style guides and page templates for people writing
+		// CircleCI's documentation, not documentation a user of CircleCI reads.
+		//
+		// Excluded because it actively produced wrong answers rather than
+		// merely useless ones. Template pages carry realistic placeholder
+		// images, and several of those basenames also appear on genuine content
+		// pages -- so the image index's collision rule picked the template.
+		// Verified upstream (2026-08-08): circleci-system-diagram.png is on both
+		// about-circleci.adoc and contributors/.../test-page-one.adoc, and
+		// automatic-rerun.png is on both orchestrate/automatic-reruns.adoc and
+		// contributors/.../template-how-to.adoc. In both cases a citation
+		// resolved to the template instead of the real page. arch.png exists
+		// only on a template, so excluding it drops the citation, which is the
+		// right outcome: no user citation should ever land on a docs template.
+		case segment == "contributors":
+			return "under contributors/: documentation about writing the documentation, whose placeholder images collide with real pages"
 		}
 	}
 	return ""
