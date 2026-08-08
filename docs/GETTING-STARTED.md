@@ -95,8 +95,8 @@ discovers plugins by name on your `PATH`, so a binary called `circleci-editor`
 circleci editor --version     # same binary, same flags
 ```
 
-Running it this way is worth preferring: the CLI passes your `CIRCLE_TOKEN`
-through, so you skip step 3 entirely.
+Running it this way is worth preferring: the CLI passes its own credentials to
+the plugin, so if the CLI is authenticated you can skip step 3 entirely.
 
 ---
 
@@ -111,16 +111,32 @@ compiler, so the answer is authoritative), config policy checks, your project's
 contexts and their variable names, usage-based right-sizing suggestions, your
 organization's *private* orbs, and triggering pipelines.
 
-### Getting one
+### The easy way: authenticate the CLI
+
+If you have the CircleCI CLI, sign in once and you are done — no token to copy,
+paste or store yourself:
+
+```shell
+circleci auth login        # opens a browser sign-in
+```
+
+Then run the editor through the CLI:
+
+```shell
+circleci editor
+```
+
+The CLI passes its own credentials to the plugin as `CIRCLECI_TOKEN`, which the
+editor reads. (`circleci setting set token` works too, if you would rather give
+the CLI a personal API token than sign in through a browser.)
+
+### The other way: export a token yourself
+
+Useful when you are running `circleci-editor` standalone, or in a container or CI
+job with no CLI.
 
 CircleCI web app → your avatar → **Personal API Tokens** → **Create New Token**.
-Copy it immediately; it is shown once.
-
-### Using it
-
-If you run via `circleci editor`, you're done — the CLI injects it.
-
-Standalone, export it:
+Copy it immediately; it is shown once. Then:
 
 ```shell
 # macOS / Linux — add to ~/.zshrc or ~/.bashrc to persist
@@ -333,17 +349,23 @@ instant you open the editor.*
 
 ## 8. Running a pipeline from the editor
 
-You can trigger a real pipeline from the editor. It spends money and is visible
-to your whole organization, so it is deliberately explicit — **it is never a
-side effect of anything else**, and it is not part of saving.
+You can run a pipeline straight from the editor, without leaving it and without
+committing first. This is the fastest way to close the loop on a config change:
+edit, validate, run, look at the result.
 
-For an unversioned run (the config in your editor, not what's committed), the
-editor fetches back the config the new pipeline is actually running and compares
-it byte-for-byte with what was on your screen. "I think I ran what you saw" is
-not good enough when the answer is checkable.
+**Unversioned runs are the useful part.** The editor can run *the config
+currently in your editor* rather than what's committed — so you can try a change
+on real infrastructure before you commit it, which is much quicker than the
+commit-push-wait-fix cycle. Handy for a new job, an orb you haven't used before,
+or a matrix you want to see expand for real.
 
-If you'd rather commit first: the editor does not push for you. Save, then use
-git as normal.
+To keep that honest, the editor fetches back the config the new pipeline is
+actually running and compares it byte-for-byte with what was on your screen, so
+you always know exactly what ran.
+
+Triggering is its own explicit action — it isn't part of saving, so saving your
+file never starts a build you didn't ask for. And if you'd rather commit first,
+that works too: the editor doesn't push for you, so save and use git as normal.
 
 ---
 
@@ -368,7 +390,12 @@ export CIRCLECI_EDITOR_AI_KEY_ANTHROPIC="sk-…"
 CircleCI's bundled documentation, and propose changes. Every proposed change
 arrives as a **diff you approve** — it never writes to your file directly. With
 a token it can also read your pipeline state: *"why did my last build fail?"*
-fetches the actual job logs. It **cannot** trigger, cancel or rerun anything.
+fetches the actual job logs.
+
+It has read access to your pipelines, not write access — actions like triggering,
+cancelling or rerunning stay with you, in the editor's own UI. That keeps the
+assistant a good thing to ask questions of, and keeps decisions where you can
+see them.
 
 **What it sends, and where.** This is the one place your file contents go to a
 third party, so it's worth being precise: when you press Send, it sends the open

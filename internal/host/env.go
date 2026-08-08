@@ -78,7 +78,7 @@ func LoadEnvironment() Environment {
 	}
 
 	return Environment{
-		Token:         os.Getenv("CIRCLE_TOKEN"),
+		Token:         token(),
 		Host:          host,
 		ProjectID:     os.Getenv("CIRCLE_PROJECT_ID"),
 		VCSType:       os.Getenv("CIRCLE_VCS_TYPE"),
@@ -87,6 +87,34 @@ func LoadEnvironment() Environment {
 		Branch:        os.Getenv("CIRCLE_BRANCH"),
 		DefaultBranch: os.Getenv("CIRCLE_DEFAULT_BRANCH"),
 	}
+}
+
+// token resolves the CircleCI API token, preferring CIRCLE_TOKEN and falling
+// back to CIRCLECI_TOKEN.
+//
+// The fallback is what makes running as a CLI plugin work at all, and its
+// absence was a real bug: the CircleCI CLI passes its own credentials to a
+// plugin as CIRCLECI_TOKEN -- note the second "CI" -- while this host only ever
+// read CIRCLE_TOKEN. So `circleci editor` reported "no CIRCLE_TOKEN found" and
+// silently lost validation, orb lookups and everything else token-gated, for
+// anyone who had authenticated the CLI rather than exported the variable by
+// hand. The README claimed the opposite ("the CircleCI CLI injects this
+// automatically"), which is what the CLI is in fact trying to do.
+//
+// Verified by running a throwaway plugin under `circleci <name>` with
+// CIRCLE_TOKEN unset in the environment of both the CLI and the plugin
+// (2026-08-08). The CLI still supplied CIRCLECI_TOKEN, from its own stored
+// credentials, alongside CIRCLE_HOST, CIRCLE_VCS_TYPE,
+// CIRCLE_PROJECT_USERNAME, CIRCLE_PROJECT_REPONAME, CIRCLE_BRANCH and
+// CIRCLE_DEFAULT_BRANCH -- all of which this host already read.
+//
+// CIRCLE_TOKEN wins when both are set: it is the variable a user exports
+// deliberately, and an explicit choice should outrank an inherited one.
+func token() string {
+	if v := os.Getenv("CIRCLE_TOKEN"); v != "" {
+		return v
+	}
+	return os.Getenv("CIRCLECI_TOKEN")
 }
 
 // HasToken reports whether a CircleCI API token is available, without
