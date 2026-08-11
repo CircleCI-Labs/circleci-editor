@@ -2,23 +2,70 @@ import { useEffect, useId, useState } from 'react';
 
 import { Badge } from '~/design/components/Badge';
 import { Button } from '~/design/components/Button';
+import { InfoHint } from '~/design/components/InfoHint';
 import { Spinner } from '~/design/components/Spinner';
 import { useAiStore } from '~/state/aiStore';
 
 /**
- * Configuration for this app's one optional docs-grounding MCP server
+ * What the hover next to the heading says. Issue #71: a reviewer with customer
+ * eyes did not know what Kapa was, and "Docs grounding (MCP)" told them
+ * nothing -- "grounding" is an LLM term of art and "MCP" was expanded nowhere
+ * in the app, while Kapa appeared only as an unexplained hostname in a
+ * placeholder. Being asked to connect to an outside service you cannot name is
+ * a reasonable thing to refuse.
+ *
+ * So: what the protocol is, who the default server belongs to, and what
+ * actually leaves the machine. No pitch -- the point is that a user can decide,
+ * which means the sentence about their questions being sent has to be as plain
+ * as the rest.
+ */
+function DocsSearchHint() {
+  return (
+    <span className="block space-y-1.5">
+      <span className="block">
+        Documentation search runs over <strong>MCP</strong> (Model Context
+        Protocol), an open standard for letting an assistant call an outside
+        tool -- here, a documentation search index.
+      </span>
+      <span className="block">
+        The default server is run by <strong>Kapa</strong>, a documentation
+        search service, and indexes CircleCI's public documentation.
+      </span>
+      <span className="block text-cc-text-faint">
+        With this on, your question is sent to that server to search against.
+        You can point it at any MCP server instead, or leave it off entirely.
+      </span>
+    </span>
+  );
+}
+
+/**
+ * Configuration for this app's one optional documentation-search MCP server
  * (issue #111's "are we able to add an MCP server with bring your own
  * key" and issue #103's Kapa docs server specifically).
+ *
+ * The user-facing wording deliberately leads with what the feature *does*
+ * ("Search CircleCI documentation") rather than how it works. It used to read
+ * "Docs grounding (MCP)", which assumed the reader knew "grounding" as an LLM
+ * term and knew what MCP was, and left Kapa as a bare hostname in a
+ * placeholder -- issue #71, from a review done with customer eyes. The
+ * mechanics and the third party are still stated, in the hover next to the
+ * heading (`DocsSearchHint`), where they inform rather than gate.
  *
  * Deliberately one fixed slot, not a general multi-server manager: this
  * app has exactly one documented use for a remote MCP server today (docs
  * search), and every request/response mechanics are already generic at
  * the wire level (see internal/ai/anthropic's package doc) -- a second
  * slot is cheap to add later if a real second use shows up, and guessing
- * at that UI now would be speculative. Nothing here names Kapa: the URL
- * and token are BYO, same as a provider API key, because this app
- * has no CircleCI-owned credential to ship and no opinion about which
- * server a user points it at.
+ * at that UI now would be speculative.
+ *
+ * The URL and credential stay BYO, same as a provider API key: this app has no
+ * CircleCI-owned credential to ship, and no opinion about which server a user
+ * points it at. Kapa is now named in the hover, which is a change of position
+ * worth recording -- this component used to name no vendor at all. Declining to
+ * name the default host was meant as neutrality, but the host was in the
+ * placeholder regardless, so in practice it just meant an unexplained third
+ * party. Naming it is what lets someone say no.
  *
  * Two ways to authenticate, both BYO in the sense that matters -- neither
  * ships a credential in this repo:
@@ -67,14 +114,18 @@ export function McpSettings() {
   return (
     <div className="flex flex-col gap-2 border-t border-cc-border pt-4">
       <div>
-        <h3 className="text-sm font-semibold text-cc-text">
-          Docs grounding (MCP)
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-cc-text">
+          Search CircleCI documentation
+          <InfoHint
+            subject="documentation search"
+            content={<DocsSearchHint />}
+          />
         </h3>
         <p className="mt-1 text-xs text-cc-text-muted">
-          Point this at a remote MCP server (e.g. a CircleCI docs search server)
-          so the assistant can search real documentation instead of relying only
-          on what it was trained on. Optional -- everything above works exactly
-          the same with nothing configured here.
+          Lets the assistant look up CircleCI's published documentation while it
+          answers, instead of relying only on what the model was trained on.
+          Optional: everything above works exactly the same with nothing set up
+          here.
         </p>
       </div>
 
