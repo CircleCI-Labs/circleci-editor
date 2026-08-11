@@ -92,21 +92,37 @@ func LoadEnvironment() Environment {
 // token resolves the CircleCI API token, preferring CIRCLE_TOKEN and falling
 // back to CIRCLECI_TOKEN.
 //
-// The fallback is what makes running as a CLI plugin work at all, and its
-// absence was a real bug: the CircleCI CLI passes its own credentials to a
-// plugin as CIRCLECI_TOKEN -- note the second "CI" -- while this host only ever
-// read CIRCLE_TOKEN. So `circleci editor` reported "no CIRCLE_TOKEN found" and
-// silently lost validation, orb lookups and everything else token-gated, for
-// anyone who had authenticated the CLI rather than exported the variable by
-// hand. The README claimed the opposite ("the CircleCI CLI injects this
-// automatically"), which is what the CLI is in fact trying to do.
+// What the CLI actually injects is CIRCLE_TOKEN. From the CLI's own
+// extension launcher (internal/extension/manifest.go, buildEnv):
 //
-// Verified by running a throwaway plugin under `circleci <name>` with
-// CIRCLE_TOKEN unset in the environment of both the CLI and the plugin
-// (2026-08-08). The CLI still supplied CIRCLECI_TOKEN, from its own stored
-// credentials, alongside CIRCLE_HOST, CIRCLE_VCS_TYPE,
-// CIRCLE_PROJECT_USERNAME, CIRCLE_PROJECT_REPONAME, CIRCLE_BRANCH and
-// CIRCLE_DEFAULT_BRANCH -- all of which this host already read.
+//	overlays := []kv{
+//	    {"CIRCLE_TOKEN", cfg.EffectiveToken()},
+//	    {"CIRCLE_HOST", cfg.EffectiveHost()},
+//	    ...
+//	}
+//
+// and EffectiveToken() resolves CIRCLE_TOKEN, then CIRCLE_CLI_TOKEN, then the
+// token loaded from the OS keyring -- which is where `circleci auth login`
+// puts it. So a browser sign-in reaches this host as CIRCLE_TOKEN, and the
+// primary lookup above, not the fallback, is what makes running as a plugin
+// work.
+//
+// An earlier version of this comment claimed the CLI passes CIRCLECI_TOKEN
+// (note the second "CI"), citing a 2026-08-08 run of a throwaway plugin with
+// CIRCLE_TOKEN unset. That reading was wrong: buildEnv starts from
+// os.Environ(), so a CIRCLECI_TOKEN already exported in the surrounding shell
+// is passed through to the plugin and is indistinguishable from one the CLI
+// added. Re-checked 2026-08-11 with *both* variables unset in the CLI's
+// environment -- the plugin received neither, and the CLI could not
+// authenticate itself either, since it reads the keyring rather than the
+// legacy ~/.circleci/cli.yml. The other variables that run did see
+// (CIRCLE_HOST, CIRCLE_VCS_TYPE, CIRCLE_PROJECT_USERNAME,
+// CIRCLE_PROJECT_REPONAME, CIRCLE_BRANCH, CIRCLE_DEFAULT_BRANCH,
+// CIRCLE_PROJECT_ID) are injected as documented.
+//
+// The fallback stays regardless. It costs one env lookup, it is the spelling
+// some CI images and wrappers use, and reading a token a user did set under a
+// plausible name is better than reporting "no token" next to one.
 //
 // CIRCLE_TOKEN wins when both are set: it is the variable a user exports
 // deliberately, and an explicit choice should outrank an inherited one.
