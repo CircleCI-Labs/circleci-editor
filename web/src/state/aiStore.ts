@@ -220,7 +220,7 @@ interface AiState {
   saveKey: (provider: string, key: string) => Promise<boolean>;
   removeKey: (provider: string) => Promise<void>;
   loadMcpStatus: () => Promise<void>;
-  saveMcp: (url: string, token: string) => Promise<boolean>;
+  saveMcp: (url: string) => Promise<boolean>;
   removeMcp: () => Promise<void>;
   loadMcpOAuthStatus: () => Promise<void>;
   /**
@@ -408,10 +408,10 @@ export const useAiStore = create<AiState>((set, get) => ({
     }
   },
 
-  saveMcp: async (url, token) => {
+  saveMcp: async (url) => {
     set({ mcpSaving: true, mcpError: null });
     try {
-      const status = await putAiMcp(url, token);
+      const status = await putAiMcp(url);
       set({ mcpSaving: false, mcpStatus: status });
       return true;
     } catch (error) {

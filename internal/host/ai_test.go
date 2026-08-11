@@ -748,16 +748,26 @@ func TestServer_AIMCP_Get_NoneConfigured(t *testing.T) {
 	assert.Equal(t, got.HasToken, false)
 }
 
-func TestServer_AIMCP_Put_StoresURLAndTokenButNeverEchoesTheToken(t *testing.T) {
+// Issue #70: PUT takes a URL and nothing else. A token sent by an old client
+// -- or left in the keystore by the removed paste-a-token path -- must not be
+// stored, echoed, or logged.
+func TestServer_AIMCP_Put_StoresURLOnlyAndClearsAnyLegacyToken(t *testing.T) {
 	store := newFakeKeyStore()
+	// Stand in for an install that configured a bearer token before that path
+	// was removed.
+	assert.NilError(t, store.Set(context.Background(), "mcp-docs-token", secret.New(aiMCPSentinelToken)))
+
 	base := newAITestServer(t, store, ai.Registry{})
 
 	var logBuf bytes.Buffer
 	var status int
 	var body string
 	withCapturedLog(t, &logBuf, func() {
+		// The token field is sent deliberately: the handler must ignore an
+		// unknown field rather than fail, so an older browser tab left open
+		// across an upgrade still configures a server successfully.
 		reqBody, err := json.Marshal(map[string]string{
-			"url":   "https://circleci.mcp.kapa.ai/sse",
+			"url":   "https://circleci.mcp.kapa.ai",
 			"token": aiMCPSentinelToken,
 		})
 		assert.NilError(t, err)
@@ -770,15 +780,13 @@ func TestServer_AIMCP_Put_StoresURLAndTokenButNeverEchoesTheToken(t *testing.T) 
 	var got mcpStatusPayload
 	assert.NilError(t, json.Unmarshal([]byte(body), &got))
 	assert.Equal(t, got.Configured, true)
-	assert.Equal(t, got.URL, "https://circleci.mcp.kapa.ai/sse")
-	assert.Equal(t, got.HasToken, true)
+	assert.Equal(t, got.URL, "https://circleci.mcp.kapa.ai")
 
-	// The token really was stored (proving the round trip works), even
-	// though it never appears in any response.
-	stored, ok, err := store.Get(context.Background(), "mcp-docs-token")
+	// Not merely unused: gone. A secret nothing can read and nothing offers to
+	// remove is worse than one with a purpose.
+	_, ok, err := store.Get(context.Background(), "mcp-docs-token")
 	assert.NilError(t, err)
-	assert.Equal(t, ok, true)
-	assert.Equal(t, stored.Reveal(), aiMCPSentinelToken)
+	assert.Equal(t, ok, false, "reconfiguring the server must drop the obsolete bearer token")
 }
 
 func TestServer_AIMCP_Put_RejectsNonHTTPSURL(t *testing.T) {
@@ -831,7 +839,7 @@ func TestServer_AIMCP_Delete_RemovesAConfiguredServer(t *testing.T) {
 	store := newFakeKeyStore()
 	base := newAITestServer(t, store, ai.Registry{})
 
-	put, err := json.Marshal(map[string]string{"url": "https://circleci.mcp.kapa.ai/sse", "token": aiMCPSentinelToken})
+	put, err := json.Marshal(map[string]string{"url": "https://circleci.mcp.kapa.ai/sse"})
 	assert.NilError(t, err)
 	status, _ := doAIRequest(t, base, http.MethodPut, "/api/ai/mcp", put)
 	assert.Equal(t, status, http.StatusOK)
@@ -903,7 +911,7 @@ func TestServer_AIChat_MCPConfigured_AttachesServerAndGroundingPromptAndSources(
 	store := newFakeKeyStore()
 	assert.NilError(t, store.Set(context.Background(), "anthropic", secret.New(aiSentinelKey)))
 
-	put, err := json.Marshal(map[string]string{"url": "https://circleci.mcp.kapa.ai/sse", "token": aiMCPSentinelToken})
+	put, err := json.Marshal(map[string]string{"url": "https://circleci.mcp.kapa.ai/sse"})
 	assert.NilError(t, err)
 
 	var gotReq ai.CompleteRequest
@@ -937,7 +945,11 @@ func TestServer_AIChat_MCPConfigured_AttachesServerAndGroundingPromptAndSources(
 
 	assert.Equal(t, len(gotReq.MCPServers), 1)
 	assert.Equal(t, gotReq.MCPServers[0].URL, "https://circleci.mcp.kapa.ai/sse")
-	assert.Equal(t, gotReq.MCPServers[0].Token.Reveal(), aiMCPSentinelToken)
+	// No token: nothing is signed in, and since issue #70 there is no other
+	// way for one to exist. The server is still attached -- the MCP spec makes
+	// authentication optional, so "configured but unauthenticated" is a real
+	// state, not a broken one.
+	assert.Equal(t, gotReq.MCPServers[0].Token.IsSet(), false)
 	assert.Assert(t, is.Contains(gotReq.System, "documentation search tool"))
 
 	var got struct {

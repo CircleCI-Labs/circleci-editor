@@ -653,7 +653,13 @@ func mustGet(t *testing.T, store *fakeKeyStore, key string) secret.String {
 
 // A manually pasted token keeps working exactly as it did before the OAuth
 // flow existed -- the pre-existing BYO path must not regress.
-func TestServer_AIChat_ManualTokenStillWorksWithNoOAuthCredential(t *testing.T) {
+// Issue #70 removed the paste-a-token path, and this pins that a token left
+// behind by it is not quietly still in use. It is the inverse of the test that
+// used to live here, which asserted a manually stored token *was* sent -- kept
+// as a test rather than deleted, because "we stopped offering that field" and
+// "we stopped honouring what it stored" are different claims, and only the
+// second one means a stale credential can no longer leave the machine.
+func TestServer_AIChat_LegacyManualTokenIsNoLongerSent(t *testing.T) {
 	f := newFakeMCPAuthServer(t, nil)
 	store := newFakeKeyStore()
 	var captured ai.CompleteRequest
@@ -662,12 +668,18 @@ func TestServer_AIChat_ManualTokenStillWorksWithNoOAuthCredential(t *testing.T) 
 	ctx := context.Background()
 	assert.NilError(t, store.Set(ctx, "fake", secret.New("invalid-provider-key")))
 	assert.NilError(t, store.Set(ctx, "mcp-docs-url", secret.New("https://docs.example.test/")))
+	// What an install that used the removed field is carrying.
 	assert.NilError(t, store.Set(ctx, "mcp-docs-token", secret.New("invalid-manual-token")))
 
 	status, body := postGroundingChat(t, ts)
 	assert.Equal(t, status, http.StatusOK)
+
+	// Still attached, still unauthenticated: the URL is configured and the MCP
+	// spec makes auth optional, so the server goes out without a token rather
+	// than the request failing.
 	assert.Equal(t, len(captured.MCPServers), 1)
-	assert.Equal(t, captured.MCPServers[0].Token.Reveal(), "invalid-manual-token")
+	assert.Equal(t, captured.MCPServers[0].Token.IsSet(), false,
+		"a token from the removed paste path must not be sent to the provider")
 	assert.Assert(t, !strings.Contains(body, "invalid-manual-token"))
 }
 

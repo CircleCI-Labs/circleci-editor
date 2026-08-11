@@ -106,14 +106,13 @@ describe('McpSettings', () => {
     expect(screen.queryByTestId('mcp-configured')).not.toBeInTheDocument();
   });
 
-  it('saves a URL and token, then shows the configured state without ever displaying the token', async () => {
+  it('saves a URL, with no token to supply -- signing in is a separate step', async () => {
     const fetchMock = mockFetchByPath({
       '/api/ai/mcp': [
-        jsonResponse(200, { configured: false, hasToken: false }),
+        jsonResponse(200, { configured: false }),
         jsonResponse(200, {
           configured: true,
-          url: 'https://circleci.mcp.kapa.ai/sse',
-          hasToken: true,
+          url: 'https://circleci.mcp.kapa.ai',
         }),
       ],
     });
@@ -122,33 +121,40 @@ describe('McpSettings', () => {
       expect(screen.getByLabelText(/mcp server url/i)).toBeInTheDocument(),
     );
 
+    // Issue #70: there is no token field to find any more. Asserted rather
+    // than merely not used, so reintroducing one is a test failure and not a
+    // silent regression back to this host holding a pasted secret.
+    expect(
+      screen.queryByLabelText(/mcp server auth token/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText(/auth token/i),
+    ).not.toBeInTheDocument();
+
     const user = userEvent.setup();
     await user.type(
       screen.getByLabelText(/mcp server url/i),
-      'https://circleci.mcp.kapa.ai/sse',
-    );
-    await user.type(
-      screen.getByLabelText(/mcp server auth token/i),
-      'mcp-test-token',
+      'https://circleci.mcp.kapa.ai',
     );
     await user.click(screen.getByRole('button', { name: /^save$/i }));
 
     await waitFor(() =>
       expect(screen.getByTestId('mcp-configured')).toBeInTheDocument(),
     );
-    expect(screen.getByText('https://circleci.mcp.kapa.ai/sse')).toBeVisible();
-    expect(screen.getByText('token set')).toBeInTheDocument();
+    expect(screen.getByText('https://circleci.mcp.kapa.ai')).toBeVisible();
 
     const putCall = fetchMock.mock.calls.find(
       ([, init]) => (init as RequestInit | undefined)?.method === 'PUT',
     );
     expect(putCall).toBeDefined();
-    // The token really was sent to the host (proving the round trip
-    // works)... but never rendered anywhere on screen.
-    expect(JSON.parse(String((putCall![1] as RequestInit).body)).token).toBe(
-      'mcp-test-token',
-    );
-    expect(document.body.textContent).not.toContain('mcp-test-token');
+    const sent = JSON.parse(String((putCall![1] as RequestInit).body));
+    expect(sent).toEqual({ url: 'https://circleci.mcp.kapa.ai' });
+
+    // The configured card no longer claims anything about a token: whether one
+    // exists is the sign-in section's question, and two widgets answering it
+    // is how they come to disagree.
+    expect(screen.queryByText('token set')).not.toBeInTheDocument();
+    expect(screen.queryByText('no token')).not.toBeInTheDocument();
   });
 
   it('removing a configured server clears it back to the empty form', async () => {

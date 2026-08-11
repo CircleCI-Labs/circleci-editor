@@ -372,7 +372,7 @@ describe('rpc client', () => {
   });
 
   it('getAiMcpStatus GETs the mcp endpoint and parses an unconfigured result', async () => {
-    const payload = { configured: false, hasToken: false };
+    const payload = { configured: false };
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse(200, payload));
@@ -387,37 +387,30 @@ describe('rpc client', () => {
     );
   });
 
-  it('putAiMcp PUTs the url and token and never echoes the token back through its own request assertion mistake', async () => {
+  it('putAiMcp PUTs the url alone -- there is no token to send', async () => {
     const payload = {
       configured: true,
       url: 'https://circleci.mcp.kapa.ai/sse',
-      hasToken: true,
     };
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse(200, payload));
     vi.stubGlobal('fetch', fetchMock);
 
-    const result = await putAiMcp(
-      'https://circleci.mcp.kapa.ai/sse',
-      'mcp-test-token',
-    );
+    const result = await putAiMcp('https://circleci.mcp.kapa.ai/sse');
 
     expect(result).toEqual(payload);
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/ai/mcp',
       expect.objectContaining({
         method: 'PUT',
-        body: JSON.stringify({
-          url: 'https://circleci.mcp.kapa.ai/sse',
-          token: 'mcp-test-token',
-        }),
+        body: JSON.stringify({ url: 'https://circleci.mcp.kapa.ai/sse' }),
       }),
     );
   });
 
   it('deleteAiMcp DELETEs the mcp endpoint', async () => {
-    const payload = { configured: false, hasToken: false };
+    const payload = { configured: false };
     const fetchMock = vi
       .fn<typeof fetch>()
       .mockResolvedValue(jsonResponse(200, payload));
