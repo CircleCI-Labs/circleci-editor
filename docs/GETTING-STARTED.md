@@ -13,7 +13,7 @@ them, so there is only ever one copy to be wrong.
 
 1. [Before you start](#1-before-you-start)
 2. [Install it](#2-install-it)
-3. [Add a token (and what works without one)](#3-add-a-token-and-what-works-without-one)
+3. [Sign in (and what works signed out)](#3-sign-in-and-what-works-signed-out)
 4. [Open your first config](#4-open-your-first-config)
 5. [The five panes, and when to use each](#5-the-five-panes-and-when-to-use-each)
 6. [Your first edit, start to finish](#6-your-first-edit-start-to-finish)
@@ -40,7 +40,7 @@ a searchable orb registry, and CircleCI's documentation, side by side.
 - Optionally, the [CircleCI CLI](https://circleci.com/docs/local-cli/) — if you
   have it, the editor becomes `circleci editor` and picks up your token
   automatically.
-- Optionally, a CircleCI API token — see [step 3](#3-add-a-token-and-what-works-without-one).
+- Optionally, a signed-in CircleCI CLI, or an API token — see [step 3](#3-sign-in-and-what-works-signed-out).
 
 **What you do not need:** a CircleCI account to *start* (though you'll want one
 to validate), an internet connection for the core editing features, or any
@@ -100,21 +100,21 @@ the plugin, so if the CLI is authenticated you can skip step 3 entirely.
 
 ---
 
-## 3. Add a token (and what works without one)
+## 3. Sign in (and what works signed out)
 
-**The editor is useful without a token.** Editing, the workflow graph, saving,
-the YAML round-trip, CircleCI's bundled documentation, and searching the public
-orb registry all work with no credential at all.
+**The editor is useful with no credential at all.** Editing, the workflow graph,
+saving, the YAML round-trip, CircleCI's bundled documentation, and searching the
+public orb registry all work signed out.
 
-**A token adds** config validation and compilation (against CircleCI's own
+**Signing in adds** config validation and compilation (against CircleCI's own
 compiler, so the answer is authoritative), config policy checks, your project's
 contexts and their variable names, usage-based right-sizing suggestions, your
 organization's *private* orbs, and triggering pipelines.
 
-### The easy way: authenticate the CLI
+### Usually there is nothing to do
 
-If you have the CircleCI CLI, sign in once and you are done — no token to copy,
-paste or store yourself:
+If you use the CircleCI CLI, you are probably already signed in — and the editor
+inherits that. Nothing to copy, paste, or store:
 
 ```shell
 circleci auth login        # opens a browser sign-in
@@ -126,11 +126,14 @@ Then run the editor through the CLI:
 circleci editor
 ```
 
-The CLI passes its own credentials to the plugin as `CIRCLECI_TOKEN`, which the
-editor reads. (`circleci setting set token` works too, if you would rather give
-the CLI a personal API token than sign in through a browser.)
+The CLI hands its own credential to every extension it launches, as
+`CIRCLE_TOKEN`, and the editor reads it from there. That credential is whatever
+the CLI itself is using, so a browser sign-in works exactly as well as a
+personal API token — the CLI keeps it in your OS keychain and passes it along
+either way. If you would rather give the CLI a token than sign in through a
+browser, `circleci setting set token` does that and the result is the same here.
 
-### The other way: export a token yourself
+### If you are running the editor on its own: export a token
 
 Useful when you are running `circleci-editor` standalone, or in a container or CI
 job with no CLI.
@@ -477,9 +480,9 @@ Specifics:
 
 - **Install** by downloading the `.zip` from the releases page. `install.sh`
   does not support Windows.
-- **Set the token** with PowerShell's `$env:CIRCLE_TOKEN` or
+- **Sign in** with `circleci auth login`, or set a token with PowerShell's `$env:CIRCLE_TOKEN` or
   `[Environment]::SetEnvironmentVariable(...)` — see
-  [step 3](#3-add-a-token-and-what-works-without-one).
+  [step 3](#3-sign-in-and-what-works-signed-out).
 - **Paths** are handled natively; use `--config C:\path\to\config.yml` if you
   need to be explicit.
 - **`--app`** depends on your default browser supporting an app-style window;
@@ -499,7 +502,7 @@ if something is unavailable, it should say why on screen. Start with `--debug`.
 | What you see | What it means | What to do |
 | --- | --- | --- |
 | Banner says no config file found | Nothing named `.circleci/config.yml` or `.yaml` from here up to the repository root | Nothing to fix — saving creates it at the path shown |
-| Validation says "unavailable"; token badge warns | No `CIRCLE_TOKEN` | Export it, or run via `circleci editor` |
+| Validation says "unavailable"; token badge warns | The editor has no CircleCI credential | Run it as `circleci editor` (after `circleci auth login`), or export `CIRCLE_TOKEN` |
 | `bind: address already in use` | Port taken | `--port` with another, or omit it to auto-pick |
 | `Error: no web interface embedded` | Built with `go install` or a bare `go build`, so no UI is embedded | Use the installer or a release archive — see [INSTALL.md](./INSTALL.md) |
 | Orb search finds little right after start | Registry cache still warming | Wait a few seconds; certified orbs are searchable almost immediately |

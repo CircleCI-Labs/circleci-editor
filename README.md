@@ -223,8 +223,8 @@ you'd expect.
 
 | Variable          | Description                                                                                    |
 | ------------------ | ------------------------------------------------------------------------------------------------ |
-| `CIRCLE_TOKEN`     | CircleCI API token. Required for config validation, and to see your organizations' *private* orbs. Not required to search or browse the public orb registry. Export it yourself when running standalone; when running as `circleci editor` the CLI supplies its own credentials as `CIRCLECI_TOKEN` (below), so you usually need not set this at all. |
-| `CIRCLECI_TOKEN`   | Read as a fallback when `CIRCLE_TOKEN` is unset. This is the variable the CircleCI CLI passes to a plugin, so authenticating the CLI (`circleci auth login`, or `circleci setting set token`) is enough for `circleci editor` to have a token. `CIRCLE_TOKEN` wins if both are set — an explicit choice outranks an inherited one. |
+| `CIRCLE_TOKEN`     | CircleCI API token. Required for config validation, and to see your organizations' *private* orbs. Not required to search or browse the public orb registry. **This is the variable the CircleCI CLI sets for a plugin it launches**, from whatever credential the CLI itself is using — so `circleci auth login` (browser sign-in, kept in your OS keychain) or `circleci setting set token` is enough for `circleci editor` to be authenticated, and you usually need not set this yourself. Export it when running the binary standalone. |
+| `CIRCLECI_TOKEN`   | Read as a fallback when `CIRCLE_TOKEN` is unset, for environments that set this spelling instead. `CIRCLE_TOKEN` wins if both are set — an explicit choice outranks an inherited one. |
 | `CIRCLE_HOST`      | CircleCI API host. Defaults to `https://circleci.com`; set this to point at a self-hosted CircleCI server installation. |
 | `XDG_CACHE_HOME`   | Overrides where the orb registry cache is stored. Defaults to `~/.cache` on every platform, including macOS. |
 | `XDG_CONFIG_HOME`  | Overrides where the AI provider key file lives when the file fallback is in use (see below). Defaults to `~/.config` on every platform, including macOS. |
@@ -354,7 +354,7 @@ subject to change without notice. Specifically:
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Startup banner says no config file found | No `.circleci/config.yml` (or `.yaml`) exists in the current directory or any parent up to the repository root | Nothing to fix — the editor still starts; saving creates the file at the path shown in the banner. |
-| Startup banner warns about a missing token; validation shows "unavailable" | Neither `CIRCLE_TOKEN` nor `CIRCLECI_TOKEN` is set | Export `CIRCLE_TOKEN`, or authenticate the CircleCI CLI (`circleci auth login`) and run via `circleci editor`, which supplies `CIRCLECI_TOKEN` for you. |
+| Startup banner warns about a missing token; validation shows "unavailable" | Neither `CIRCLE_TOKEN` nor `CIRCLECI_TOKEN` is set | Sign in to the CircleCI CLI (`circleci auth login`) and run it as `circleci editor`, which passes the CLI's own credential through as `CIRCLE_TOKEN`. Or export `CIRCLE_TOKEN` yourself. |
 | `bind: address already in use` | The requested (or auto-picked) port is taken | Pass a different port with `--port`, or omit it to let the editor pick a free one. |
 | `Error: no web interface embedded` on startup, nothing opens | The binary was built with `go install` or a bare `go build`, without the web build first | Run `task build` (which builds the web app before the Go binary), or use one of [Installation](#installation)'s other options. |
 | Orb search returns few or no results right after startup | The local orb registry cache is still warming | Wait a few seconds and search again — certified orbs are searchable almost immediately, and the full registry crawl fills in in the background. |
