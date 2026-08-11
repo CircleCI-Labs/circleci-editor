@@ -221,7 +221,6 @@ describe('aiStore', () => {
           jsonResponse(200, {
             configured: true,
             url: 'https://circleci.mcp.kapa.ai/sse',
-            hasToken: true,
           }),
         ],
       });
@@ -231,25 +230,23 @@ describe('aiStore', () => {
       expect(useAiStore.getState().mcpStatus).toEqual({
         configured: true,
         url: 'https://circleci.mcp.kapa.ai/sse',
-        hasToken: true,
       });
       expect(useAiStore.getState().mcpError).toBeNull();
     });
 
-    it('saveMcp stores the url/token and never keeps the token in state', async () => {
+    it('saveMcp stores the url and keeps no credential in state', async () => {
       mockFetchByPath({
         '/api/ai/mcp': [
           jsonResponse(200, {
             configured: true,
             url: 'https://circleci.mcp.kapa.ai/sse',
-            hasToken: true,
           }),
         ],
       });
 
       const ok = await useAiStore
         .getState()
-        .saveMcp('https://circleci.mcp.kapa.ai/sse', 'mcp-test-token');
+        .saveMcp('https://circleci.mcp.kapa.ai/sse');
 
       expect(ok).toBe(true);
       const state = useAiStore.getState();
@@ -271,7 +268,7 @@ describe('aiStore', () => {
 
       const ok = await useAiStore
         .getState()
-        .saveMcp('http://insecure.example.com', '');
+        .saveMcp('http://insecure.example.com');
 
       expect(ok).toBe(false);
       expect(useAiStore.getState().mcpError).toBe(
@@ -281,16 +278,13 @@ describe('aiStore', () => {
 
     it('removeMcp clears the configuration', async () => {
       mockFetchByPath({
-        '/api/ai/mcp': [
-          jsonResponse(200, { configured: false, hasToken: false }),
-        ],
+        '/api/ai/mcp': [jsonResponse(200, { configured: false })],
       });
 
       await useAiStore.getState().removeMcp();
 
       expect(useAiStore.getState().mcpStatus).toEqual({
         configured: false,
-        hasToken: false,
       });
       expect(useAiStore.getState().mcpSaving).toBe(false);
     });

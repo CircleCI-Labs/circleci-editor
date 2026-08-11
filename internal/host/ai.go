@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -358,22 +359,22 @@ func lastUserMessage(messages []aiChatMessage) string {
 	return ""
 }
 
-// mcpDocsURLKey and mcpDocsTokenKey are the keystore.Store ids under which
-// this app's single, optional docs-grounding MCP server (issue #103's Kapa
-// docs server, or any other remote MCP server BYO-pointed here) is stored
-// -- alongside provider keys, in the same store, protected the same way
-// (OS keychain, else a 0600 file). Two separate entries rather
-// than one JSON blob: URL is not a secret (it's shown back to the user by
-// GET /api/ai/mcp, same as a provider's storage location already is), so
-// bundling it with Token into one keystore.Store value would mean either
-// revealing the token every time the UI just wants to redisplay the URL, or
-// growing keystore.Store's interface to know about structured values --
-// neither is worth it for two related strings. Neither id ever appears in
-// GET /api/ai/status's providers list: this configures a *tool* a chat
-// request can use, not a chat backend of its own.
+// mcpDocsURLKey is the keystore.Store id under which this app's single,
+// optional documentation-search MCP server (issue #103's Kapa docs server, or
+// any other remote MCP server BYO-pointed here) is stored -- alongside
+// provider keys, in the same store, protected the same way (OS keychain, else
+// a 0600 file). It never appears in GET /api/ai/status's providers list: this
+// configures a *tool* a chat request can use, not a chat backend of its own.
+//
+// mcpDocsTokenKey is where a hand-pasted bearer token used to be stored. That
+// path is gone (issue #70) and nothing writes this id any more; it survives
+// only so the value can be *deleted* from installs that set one, which is why
+// every reference to it below is a Delete. Removing the constant outright
+// would strand those secrets in the keychain forever, so it stays until it is
+// safe to assume nobody is carrying one.
 const (
 	mcpDocsURLKey   = "mcp-docs-url"
-	mcpDocsTokenKey = "mcp-docs-token" //nolint:gosec // this is a keystore.Store *key name* (like "anthropic" for the provider key), never a credential value -- the actual token is always wrapped in secret.String before it touches this constant.
+	mcpDocsTokenKey = "mcp-docs-token" //nolint:gosec // this is a keystore.Store *key name* (like "anthropic" for the provider key), never a credential value -- and nothing stores one under it any more; see the comment above.
 )
 
 // mcpServerName is the fixed ai.MCPServer.Name this app sends for its one
@@ -383,17 +384,21 @@ const (
 // mcp_servers[].name / tools[].mcp_toolset.mcp_server_name correlation key.
 const mcpServerName = "circleci-docs"
 
-// aiMCPStatusResponse is served by GET, PUT and DELETE /api/ai/mcp. It
-// never echoes Token -- only whether one is set (HasToken) -- following
-// the exact "never echo the secret back" convention aiKeyResponse already
-// established for provider keys. URL is not a secret and is safe to
-// return: it's the address of a server, not a credential, and showing it
-// back is what lets the settings UI redisplay "currently pointed at X"
-// without the browser having to remember it itself.
+// aiMCPStatusResponse is served by GET, PUT and DELETE /api/ai/mcp.
+//
+// URL is not a secret and is safe to return: it's the address of a server,
+// not a credential, and showing it back is what lets the settings UI
+// redisplay "currently pointed at X" without the browser having to remember
+// it itself.
+//
+// There is no token field, and no "a token is set" flag either. Authenticating
+// to an MCP server is OAuth-only now (see mcpauth), and whether that succeeded
+// is answered by GET /api/ai/mcp/oauth, which owns the question. A second
+// answer here could only agree or contradict it, and a pane rendering "no
+// token" next to "Signed in" is the contradiction.
 type aiMCPStatusResponse struct {
 	Configured bool   `json:"configured"`
 	URL        string `json:"url,omitempty"`
-	HasToken   bool   `json:"hasToken"`
 }
 
 // handleAIMCP serves GET, PUT and DELETE /api/ai/mcp: reading, setting, and
@@ -418,23 +423,40 @@ func (s *Server) handleAIMCPGet(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	url, hasToken, configured, err := s.loadMCPConfigForDisplay(ctx)
+	url, configured, err := s.loadMCPConfigForDisplay(ctx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read the stored MCP server configuration")
 		return
 	}
-	writeJSON(w, http.StatusOK, aiMCPStatusResponse{Configured: configured, URL: url, HasToken: hasToken})
+
+	// Opportunistic cleanup of a token left by the removed paste-a-token path
+	// (issue #70), for the user who configured one and never touches these
+	// settings again -- PUT and DELETE cover everyone who does. Reading the
+	// settings pane is the one moment this host knows such a user is present.
+	//
+	// A write on a GET, which normally would not be acceptable: it is
+	// idempotent, it changes nothing this or any other response reports, and
+	// the alternative is a secret that outlives every code path able to use or
+	// remove it. Errors are ignored for the same reason as in PUT -- this is
+	// tidying, not the request.
+	if configured {
+		_ = s.aiStore.Delete(ctx, mcpDocsTokenKey)
+	}
+
+	writeJSON(w, http.StatusOK, aiMCPStatusResponse{Configured: configured, URL: url})
 }
 
-// aiMCPPutRequest is the JSON body accepted by PUT /api/ai/mcp. Token is
-// optional per the MCP spec's own "auth is optional" stance (see
-// ai.MCPServer's doc comment) -- an empty Token on a PUT clears any
-// previously stored token rather than leaving it untouched, so "configure
-// with no token" and "remove the token I previously set" are the same,
-// discoverable action rather than two different code paths.
+// aiMCPPutRequest is the JSON body accepted by PUT /api/ai/mcp: a URL, and
+// nothing else.
+//
+// It used to accept a Token as well, for a server issuing long-lived bearer
+// tokens directly. Removed in issue #70: the server this app points at
+// authenticates with OAuth, which mcpauth performs end to end, so the pasted
+// token was a second credential path that duplicated the first while costing
+// this host a secret to receive, store, and be trusted with. A field that
+// exists only in case something someday needs it is not worth that.
 type aiMCPPutRequest struct {
-	URL   string `json:"url"`
-	Token string `json:"token"`
+	URL string `json:"url"`
 }
 
 func (s *Server) handleAIMCPPut(w http.ResponseWriter, r *http.Request) {
@@ -468,20 +490,18 @@ func (s *Server) handleAIMCPPut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to store the MCP server URL")
 		return
 	}
-	// See aiMCPPutRequest's doc comment: an empty Token deliberately clears
-	// any previously stored one rather than leaving it untouched.
-	var tokenErr error
-	if req.Token == "" {
-		tokenErr = s.aiStore.Delete(ctx, mcpDocsTokenKey)
-	} else {
-		tokenErr = s.aiStore.Set(ctx, mcpDocsTokenKey, secret.New(req.Token))
-	}
-	if tokenErr != nil {
-		writeError(w, http.StatusInternalServerError, "failed to store the MCP server token")
-		return
+	// Clears a bearer token left by the removed paste-a-token path (issue
+	// #70). Reconfiguring the server is the natural moment to drop a
+	// credential for it that can no longer be used: leaving one in the
+	// keychain would mean a secret nothing reads and nothing offers to
+	// remove. Deliberately not fatal -- the URL is stored, the configuration
+	// works, and failing the request over an unused leftover would break the
+	// action the user actually asked for.
+	if err := s.aiStore.Delete(ctx, mcpDocsTokenKey); err != nil {
+		log.Printf("ai: could not remove the obsolete MCP bearer token from the keystore")
 	}
 
-	writeJSON(w, http.StatusOK, aiMCPStatusResponse{Configured: true, URL: req.URL, HasToken: req.Token != ""})
+	writeJSON(w, http.StatusOK, aiMCPStatusResponse{Configured: true, URL: req.URL})
 }
 
 func (s *Server) handleAIMCPDelete(w http.ResponseWriter, r *http.Request) {
@@ -504,23 +524,19 @@ func (s *Server) handleAIMCPDelete(w http.ResponseWriter, r *http.Request) {
 // getting this wrong doesn't risk sending a stale/wrong config to the
 // provider) -- so this one does propagate the error, distinctly from
 // loadMCPConfig below.
-func (s *Server) loadMCPConfigForDisplay(ctx context.Context) (url string, hasToken bool, configured bool, err error) {
+func (s *Server) loadMCPConfigForDisplay(ctx context.Context) (url string, configured bool, err error) {
 	urlSecret, ok, err := s.aiStore.Get(ctx, mcpDocsURLKey)
 	if err != nil {
-		return "", false, false, err
+		return "", false, err
 	}
 	if !ok || !urlSecret.IsSet() {
-		return "", false, false, nil
-	}
-	tokenSecret, _, err := s.aiStore.Get(ctx, mcpDocsTokenKey)
-	if err != nil {
-		return "", false, false, err
+		return "", false, nil
 	}
 	// urlSecret.Reveal() here is justified the same way internal/ai/secret's
 	// doc comment justifies its one other call site: URL is not a secret
 	// (see aiMCPStatusResponse's own doc comment) and this is the value's
 	// designated, documented display path.
-	return urlSecret.Reveal(), tokenSecret.IsSet(), true, nil
+	return urlSecret.Reveal(), true, nil
 }
 
 // loadMCPConfig is handleAIChat's read path: the MCP server this app should
@@ -551,27 +567,19 @@ func (s *Server) loadMCPConfig(ctx context.Context) (server ai.MCPServer, config
 	// logged or echoed back to a response from this function.
 	serverURL := urlSecret.Reveal()
 
-	// An OAuth credential, when one exists, wins over a manually pasted
-	// token: it is the one this app can keep fresh by itself (issue #103),
-	// and a stale hand-pasted token sitting alongside it should not be what
-	// gets sent. mcpOAuthToken returns an unset token with no reason when no
-	// credential is stored at all, which falls through to the manual token
-	// below -- so the pre-existing BYO path is untouched for anyone using it.
+	// The OAuth credential is now the only one there is (issue #70 removed the
+	// hand-pasted alternative). mcpOAuthToken returns an unset token and no
+	// reason when nothing is stored at all, which is a legitimate
+	// configuration and not a failure: the MCP spec treats authentication as
+	// optional, so a server needing none is reached with no token, exactly as
+	// before.
 	oauthToken, reason := s.mcpOAuthToken(ctx, serverURL)
 	if reason != "" {
 		// Configured, but not usable right now. Report *why*, and send no
 		// MCP server -- never a token known to be rejected.
 		return ai.MCPServer{}, false, reason
 	}
-	if oauthToken.IsSet() {
-		return ai.MCPServer{Name: mcpServerName, URL: serverURL, Token: oauthToken}, true, ""
-	}
-
-	tokenSecret, _, err := s.aiStore.Get(ctx, mcpDocsTokenKey)
-	if err != nil {
-		return ai.MCPServer{}, false, ""
-	}
-	return ai.MCPServer{Name: mcpServerName, URL: serverURL, Token: tokenSecret}, true, ""
+	return ai.MCPServer{Name: mcpServerName, URL: serverURL, Token: oauthToken}, true, ""
 }
 
 // loadCircleCIMCPConfig is handleAIChat's read path for issue #11's second
