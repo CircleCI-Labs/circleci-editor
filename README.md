@@ -60,7 +60,7 @@ It does make outbound requests, each for a feature you invoke:
 | `hub.docker.com` | Listing available tags for a Docker image | None |
 | `api.github.com` | Checking whether the bundled CircleCI documentation snapshot is out of date | None |
 | `api.anthropic.com` | The AI pane, and only when you press Send | The AI key you configured |
-| `circleci.mcp.kapa.ai` | CircleCI's documentation MCP server, if you enable it in the AI pane | Its own token, if required |
+| `circleci.mcp.kapa.ai` | Searching CircleCI's published documentation, if you switch it on in the AI pane. Run by Kapa, a documentation search service that indexes CircleCI's public docs; your question is sent there to search against, your config contents are not | A token from its browser sign-in |
 
 Validation deliberately sends your config to CircleCI's own compiler rather than
 approximating it locally — that is what makes the result authoritative rather

@@ -361,3 +361,48 @@ describe('McpSettings', () => {
     expect(screen.getByText(/not signed in/i)).toBeVisible();
   });
 });
+
+/**
+ * Issue #71: the section used to be headed "Docs grounding (MCP)" with Kapa
+ * appearing only as a hostname in a placeholder, and a reviewer looking at it
+ * with customer eyes could not tell what it was or who it involved.
+ */
+describe('explaining what this is', () => {
+  beforeEach(() => {
+    useAiStore.setState(AI_STATE_RESET);
+    mockFetchByPath({
+      '/api/ai/mcp': [
+        jsonResponse(200, { configured: false, hasToken: false }),
+      ],
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('leads with what the feature does, not how it works', async () => {
+    render(<McpSettings />);
+    expect(
+      await screen.findByRole('heading', {
+        name: /Search CircleCI documentation/,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Docs grounding/)).not.toBeInTheDocument();
+  });
+
+  it('names Kapa, expands MCP, and says what gets sent -- on hover', async () => {
+    render(<McpSettings />);
+    await userEvent.hover(
+      await screen.findByRole('button', {
+        name: 'More about documentation search',
+      }),
+    );
+    expect(await screen.findByText(/Kapa/)).toBeInTheDocument();
+    expect(screen.getByText(/Model Context Protocol/)).toBeInTheDocument();
+    // The disclosure a user needs in order to decline, not just to consent.
+    expect(
+      screen.getByText(/your question is sent to that server/),
+    ).toBeInTheDocument();
+  });
+});

@@ -407,6 +407,37 @@ neither does this project. Nothing is sent until you press Send. The full
 disclosure is in the Reference pane under *What the AI pane sends, and to whom*,
 and summarised in the [README](../README.md#what-leaves-your-machine).
 
+### Searching CircleCI's documentation (optional, and off by default)
+
+Under the AI settings there's a section called **Search CircleCI documentation**.
+It's worth a short explanation, because it involves a service you may not have
+heard of.
+
+By default the assistant answers from two things: what the model was trained on,
+and the snapshot of CircleCI's documentation bundled into the editor itself.
+Turning this on adds a third — it can search CircleCI's *published*
+documentation live, which is useful for anything newer than either of those.
+
+Three terms, plainly:
+
+- **MCP** (Model Context Protocol) is an open standard for letting an assistant
+  call an outside tool. Here the tool is a documentation search index.
+- **Kapa** is the documentation search service that runs the default server
+  (`circleci.mcp.kapa.ai`) and indexes CircleCI's public documentation. It is a
+  third party, not part of this editor and not CircleCI support.
+- **Sign in** runs a standard OAuth flow in your browser. There's no API key to
+  find or paste; the editor stores the resulting token the same way it stores an
+  AI provider key, and refreshes it for you.
+
+**What this adds to what leaves your machine:** with it enabled, your question
+is sent to that server so it can be searched against. Your config contents are
+not — those go only to your AI provider, as described above. You can point the
+URL at any other MCP server instead, and leaving it switched off changes nothing
+else about the assistant.
+
+The same summary is one hover away in the app: the **ⓘ** next to the section
+heading.
+
 ---
 
 ## 10. Commands and flags you will actually use
