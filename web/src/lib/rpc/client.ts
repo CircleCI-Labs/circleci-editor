@@ -204,6 +204,15 @@ export interface ValidateResponse {
   errors?: ValidateErrorItem[];
   outputYaml?: string;
   reason?: string;
+  /**
+   * Set when the compile went ahead without something that can change its
+   * verdict -- today, only a missing organization, which leaves private orbs
+   * and allow-listed URL orbs unresolvable (issue #67). Only ever present
+   * alongside `valid: false`, and it does not soften that verdict: it states
+   * the limits of the check that produced it, so an error naming an orb can
+   * be read for what it is rather than as proof the config is wrong.
+   */
+  caveat?: string;
 }
 
 interface ErrorEnvelope {

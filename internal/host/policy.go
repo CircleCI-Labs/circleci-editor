@@ -24,6 +24,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -361,40 +362,73 @@ type policyOwnerOutcome struct {
 // A successful lookup is remembered for the life of the process; a failed
 // one never is.
 func (s *Server) resolvePolicyOwner(ctx context.Context, orgSlug string) (string, policyOwnerOutcome) {
-	if cached, ok := s.policyOwners.get(orgSlug); ok {
-		return cached, policyOwnerOutcome{succeeded: true}
+	id, err := s.resolveOwnerID(ctx, orgSlug)
+	if err == nil {
+		return id, policyOwnerOutcome{succeeded: true}
 	}
 
-	org, err := s.policyClient.GetOrganization(ctx, orgSlug)
-	if err != nil {
-		// Deliberately does not name the org: the slug is useful to the
-		// user (who can see it in the app bar already) but adds nothing to
-		// a log line, and this endpoint's logging budget is the status
-		// code and the request line.
-		logPolicyUpstreamFailure("look up the organization that owns this project", err)
-
-		switch {
-		case circleci.IsNotFound(err):
-			return "", policyOwnerOutcome{reason: "CircleCI has no organization matching " + orgSlug +
-				" (HTTP 404), so there are no policies to check against. " +
-				"This host builds that name from the environment the CircleCI CLI passed it"}
-		case circleci.IsForbidden(err):
-			return "", policyOwnerOutcome{reason: "this token does not have permission to read the organization " +
-				orgSlug + " (HTTP 403), so its policies cannot be consulted"}
-		default:
-			return "", policyOwnerOutcome{
-				retryable: true,
-				reason:    "could not look up this project's organization on CircleCI: " + describeUpstreamError(err),
-			}
-		}
-	}
-	if org.ID == "" {
+	if errors.Is(err, errOrganizationHasNoID) {
 		return "", policyOwnerOutcome{reason: "CircleCI's record for " + orgSlug +
 			" carries no organization id, and the config-policy API is addressed by id"}
 	}
 
+	// Deliberately does not name the org: the slug is useful to the
+	// user (who can see it in the app bar already) but adds nothing to
+	// a log line, and this endpoint's logging budget is the status
+	// code and the request line.
+	logPolicyUpstreamFailure("look up the organization that owns this project", err)
+
+	switch {
+	case circleci.IsNotFound(err):
+		return "", policyOwnerOutcome{reason: "CircleCI has no organization matching " + orgSlug +
+			" (HTTP 404), so there are no policies to check against. " +
+			"This host builds that name from the environment the CircleCI CLI passed it"}
+	case circleci.IsForbidden(err):
+		return "", policyOwnerOutcome{reason: "this token does not have permission to read the organization " +
+			orgSlug + " (HTTP 403), so its policies cannot be consulted"}
+	default:
+		return "", policyOwnerOutcome{
+			retryable: true,
+			reason:    "could not look up this project's organization on CircleCI: " + describeUpstreamError(err),
+		}
+	}
+}
+
+// errOrganizationHasNoID reports that CircleCI answered with an organization
+// record carrying no id. Distinguished from a transport or status failure
+// because there is nothing to retry and nothing upstream to blame: the lookup
+// worked, the answer just cannot key an id-addressed API.
+var errOrganizationHasNoID = errors.New("host: organization record carries no id")
+
+// resolveOwnerID turns the "<vcs>/<org>" slug this host assembled from its
+// environment into the organization UUID CircleCI's id-addressed APIs are
+// keyed by — the same two-step `circleci policy decide --org <slug>` and
+// `circleci config validate --org <slug>` both perform.
+//
+// Deliberately free of any one caller's vocabulary. Config policies were the
+// first feature to need an org UUID, so this lookup used to live inside
+// resolvePolicyOwner along with policy-specific prose; config compilation
+// needs the identical lookup (see compileOwnerID), and duplicating it would
+// have meant two caches and two round trips for one fact. Callers map the
+// error to whatever their own surface should say.
+//
+// A successful lookup is remembered for the life of the process; a failed one
+// never is.
+func (s *Server) resolveOwnerID(ctx context.Context, orgSlug string) (string, error) {
+	if cached, ok := s.policyOwners.get(orgSlug); ok {
+		return cached, nil
+	}
+
+	org, err := s.policyClient.GetOrganization(ctx, orgSlug)
+	if err != nil {
+		return "", err
+	}
+	if org.ID == "" {
+		return "", errOrganizationHasNoID
+	}
+
 	s.policyOwners.put(orgSlug, org.ID)
-	return org.ID, policyOwnerOutcome{succeeded: true}
+	return org.ID, nil
 }
 
 // policyMetadata builds the `data.meta` document policies can branch on,

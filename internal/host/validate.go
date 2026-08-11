@@ -76,6 +76,13 @@ type validateErrorItem struct {
 // Available=false either, because "we could not reach CircleCI" and "we
 // have nothing to ask CircleCI with" are different facts. See
 // describeUpstreamError.
+// Caveat is set when the compile went ahead without something that can change
+// its verdict — today, only a missing organization, which leaves private and
+// URL orbs unresolvable (see compileOwnerID). It is not an error and does not
+// contradict Valid: a config can be genuinely valid, or genuinely broken, with
+// a caveat attached. It exists so that Valid=false can be *presented* with the
+// limits of the check that produced it, rather than as a flat assertion the
+// config is wrong.
 type validateResponse struct {
 	Available  bool                `json:"available"`
 	Source     string              `json:"source"`
@@ -83,6 +90,7 @@ type validateResponse struct {
 	Errors     []validateErrorItem `json:"errors,omitempty"`
 	OutputYAML string              `json:"outputYaml,omitempty"`
 	Reason     string              `json:"reason,omitempty"`
+	Caveat     string              `json:"caveat,omitempty"`
 }
 
 // handleValidate serves POST /api/validate: it submits the given config to
@@ -120,12 +128,17 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), validateTimeout)
 	defer cancel()
 
-	// OwnerID is left empty: the CircleCI CLI plugin environment does not
-	// expose an organization UUID, only VCS-based project identifiers
-	// (see Environment.ProjectSlug). Basic config validation does not
-	// require it; only resolution of some org-scoped private orbs and
-	// contexts would benefit from it.
-	result, err := s.compiler.CompileConfig(ctx, circleci.CompileRequest{ConfigYAML: *req.Contents})
+	// Naming the organization is what lets CircleCI resolve this org's private
+	// orbs and apply its URL orb allow-list. Without it, a config that
+	// compiles in CI is reported invalid — issue #67. Best-effort by design:
+	// see compileOwnerID for why an unresolvable organization compiles anyway,
+	// with a caveat, rather than failing the request.
+	ownerID, ownerCaveat := s.compileOwnerID(ctx)
+
+	result, err := s.compiler.CompileConfig(ctx, circleci.CompileRequest{
+		ConfigYAML: *req.Contents,
+		OwnerID:    ownerID,
+	})
 	if err != nil {
 		// A rejected token and an unreachable API look identical to the
 		// browser unless this host tells them apart: both used to arrive as
@@ -139,8 +152,10 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 		// as an error response a generic HTTP client would treat like any
 		// other 5xx-adjacent failure.
 		//
-		// A CompileConfig call never names a project (OwnerID is left empty
-		// above), so there is no project-not-found case to confuse this
+		// A CompileConfig call never names a project, and the organization it
+		// may name (above) is one CircleCI itself just resolved — a lookup
+		// that failed contributes no owner at all rather than a doubtful one.
+		// So there is still no project-or-org-not-found case to confuse this
 		// with: a 404 here would mean something else entirely and falls
 		// through to the generic branch below, described honestly by
 		// describeUpstreamError rather than guessed at.
@@ -170,6 +185,17 @@ func (s *Server) handleValidate(w http.ResponseWriter, r *http.Request) {
 		for i, e := range result.Errors {
 			resp.Errors[i] = validateErrorItem{Message: e.Message}
 		}
+	}
+
+	// Only attached to a failure, and deliberately so. Compiling without an
+	// organization is *stricter* than compiling with one -- it can only fail
+	// to resolve an orb that would otherwise have resolved, never invent a
+	// success -- so a caveat on Valid=true would qualify a verdict that the
+	// missing owner cannot have affected. Noise on every valid config is a
+	// real cost: it trains the reader to ignore the field on the one response
+	// where it changes what the errors mean.
+	if !result.Valid {
+		resp.Caveat = ownerCaveat
 	}
 
 	writeJSON(w, http.StatusOK, resp)
