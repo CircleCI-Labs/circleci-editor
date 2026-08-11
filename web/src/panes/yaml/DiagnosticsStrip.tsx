@@ -97,6 +97,8 @@ export function DiagnosticsStrip({
   const text = useAppStore((state) => state.text);
   const configPath = useAppStore((state) => state.configPath);
   const mutate = useAppStore((state) => state.mutate);
+  /** Issue #67: the host's note on what its compile could not resolve. */
+  const validationCaveat = useAppStore((state) => state.validation.caveat);
 
   const [showFullOutput, setShowFullOutput] = useState(false);
   const {
@@ -279,6 +281,24 @@ export function DiagnosticsStrip({
             .map((context) => `${context.kind} "${context.name}"`)
             .join(' → ')}
           .
+        </p>
+      ) : null}
+
+      {/*
+        Issue #67: what the compile could not account for. Shown only on
+        `circleci`-sourced diagnostics, because that is what it describes -- a
+        local YAML syntax error is unaffected by whether CircleCI knew which
+        organization to resolve orbs against, and attaching it there would be
+        the sort of technically-true-but-irrelevant note that gets learned as
+        noise. Deliberately not danger-toned: it does not add a problem, it
+        bounds how much to trust the one above.
+      */}
+      {validationCaveat && current.source === 'circleci' ? (
+        <p
+          className="mt-1 text-2xs leading-relaxed text-cc-text-muted"
+          data-testid="diagnostics-caveat"
+        >
+          {validationCaveat}
         </p>
       ) : null}
 

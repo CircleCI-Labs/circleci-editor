@@ -411,3 +411,88 @@ describe('DiagnosticsStrip: Fix with AI', () => {
     expect(useAiStore.getState().promptSeed).toBeNull();
   });
 });
+
+/**
+ * Issue #67: when the host compiles without an organization it cannot resolve
+ * private orbs or allow-listed URL orbs, so an `invalid` verdict may be about
+ * the missing context rather than the config. The host says so via
+ * `validation.caveat`; these pin that the strip passes it on, and that it
+ * stays attached to the compiler's diagnostics only.
+ */
+describe('compile caveat', () => {
+  const CAVEAT =
+    'This config was compiled without an organization, so orbs that resolve ' +
+    'per-organization -- private orbs, and URL orbs governed by an allow-list ' +
+    '-- could not be resolved.';
+
+  const URL_ORB_ERROR =
+    "Orb https://example.com/orbs/go.yml is not permitted by the organization's URL orb allow-list.";
+
+  it('shows the caveat alongside a CircleCI compiler error', () => {
+    seedStores({ text: 'version: 2.1\n' });
+    useAppStore.setState({
+      validation: {
+        state: 'invalid',
+        errors: [{ message: URL_ORB_ERROR }],
+        caveat: CAVEAT,
+      },
+    });
+
+    renderStrip([URL_ORB_ERROR]);
+
+    expect(screen.getByTestId('diagnostics-caveat')).toHaveTextContent(
+      /compiled without an organization/,
+    );
+    // The compiler's own words still lead; the caveat qualifies, never replaces.
+    expect(screen.getByTestId('diagnostic-title')).toHaveTextContent(
+      /URL orb allow-list/,
+    );
+  });
+
+  it('omits the caveat when the host attached none', () => {
+    seedStores({ text: 'version: 2.1\n' });
+    useAppStore.setState({
+      validation: {
+        state: 'invalid',
+        errors: [{ message: URL_ORB_ERROR }],
+      },
+    });
+
+    renderStrip([URL_ORB_ERROR]);
+
+    expect(screen.queryByTestId('diagnostics-caveat')).not.toBeInTheDocument();
+  });
+
+  it('does not attach the caveat to a locally-found problem', () => {
+    // A dangling `requires` is found by the local check, with no help from
+    // CircleCI, so whether an organization could be named has no bearing on
+    // it. The caveat is in the store either way -- the gate is the source.
+    const broken = `version: 2.1
+jobs:
+  build:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+workflows:
+  main:
+    jobs:
+      - build:
+          requires:
+            - gone
+`;
+    seedStores({ text: broken });
+    useAppStore.setState({
+      validation: { state: 'invalid', errors: [], caveat: CAVEAT },
+    });
+
+    const { result } = renderStrip([], {
+      state: 'unavailable',
+      errors: [],
+      reason: 'no CircleCI API token available; validation requires a token',
+    });
+
+    expect(result.diagnostics[0]?.source).toBe('local');
+    expect(screen.queryByTestId('diagnostics-caveat')).not.toBeInTheDocument();
+  });
+});

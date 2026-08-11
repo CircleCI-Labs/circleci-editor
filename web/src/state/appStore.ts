@@ -69,6 +69,14 @@ export interface ValidationInfo {
   errors: ValidateErrorItem[];
   reason?: string;
   outputYaml?: string;
+  /**
+   * What the host could not account for while reaching an `invalid` verdict
+   * (issue #67) -- in practice, a compile with no organization, which cannot
+   * resolve private orbs or allow-listed URL orbs. Carried alongside the
+   * errors rather than replacing them: the errors are still the actionable
+   * part, this says how much to trust them.
+   */
+  caveat?: string;
 }
 
 /**
@@ -881,7 +889,11 @@ export const useAppStore = create<AppState>((set, get) => ({
             });
           } else {
             set({
-              validation: { state: 'invalid', errors: result.errors ?? [] },
+              validation: {
+                state: 'invalid',
+                errors: result.errors ?? [],
+                caveat: result.caveat,
+              },
             });
           }
         })

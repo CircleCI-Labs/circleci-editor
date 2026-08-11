@@ -754,7 +754,17 @@ func (s *Server) runCompileGate(ctx context.Context, contents string) (string, b
 		return "", true
 	}
 
-	result, err := s.compiler.CompileConfig(ctx, circleci.CompileRequest{ConfigYAML: contents})
+	// The organization matters more here than anywhere else this compiles.
+	// Without it, private and URL orbs do not resolve (issue #67), so a
+	// perfectly runnable config fails this gate and the user is refused a run
+	// CircleCI would have accepted -- a false refusal, which is the one
+	// outcome a gate must not produce.
+	ownerID, ownerCaveat := s.compileOwnerID(ctx)
+
+	result, err := s.compiler.CompileConfig(ctx, circleci.CompileRequest{
+		ConfigYAML: contents,
+		OwnerID:    ownerID,
+	})
 	if err != nil {
 		logRunUpstreamFailure("check that this config compiles before running it", err)
 		return "", true
@@ -763,9 +773,23 @@ func (s *Server) runCompileGate(ctx context.Context, contents string) (string, b
 		return "", true
 	}
 
-	return "this config does not compile, so running it would create a pipeline that fails immediately " +
+	refusal := "this config does not compile, so running it would create a pipeline that fails immediately " +
 		"and still shows up in your team's dashboard. Fix the validation errors first — nothing was " +
-		"triggered", false
+		"triggered"
+
+	// Still a refusal, not a pass. The gate guards real money, and a compile
+	// failure is the best evidence available that spending it is pointless;
+	// waving that through whenever an organization happens to be unresolvable
+	// would disable the gate precisely for the setups least able to check
+	// anything. But the refusal says what it could not account for, so a user
+	// looking at an error about a private or URL orb can tell the difference
+	// between their config being wrong and this host lacking the context to
+	// judge it.
+	if ownerCaveat != "" {
+		refusal += ". " + ownerCaveat
+	}
+
+	return refusal, false
 }
 
 // describeOrgForRun names the organization in the way most likely to match
