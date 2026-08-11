@@ -281,7 +281,7 @@ func (s *Server) handleAIMCPOAuthStart(w http.ResponseWriter, r *http.Request) {
 
 	resourceURL := strings.TrimSpace(req.URL)
 	if resourceURL == "" {
-		stored, _, configured, err := s.loadMCPConfigForDisplay(setupCtx)
+		stored, configured, err := s.loadMCPConfigForDisplay(setupCtx)
 		if err == nil && configured {
 			resourceURL = stored
 		}

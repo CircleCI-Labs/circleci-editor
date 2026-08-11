@@ -1250,38 +1250,39 @@ export function deleteAiKey(provider: string): Promise<AiKeyResponse> {
 
 /**
  * The JSON shape returned by `GET`, `PUT` and `DELETE /api/ai/mcp` --
- * issue #111/#103's docs-grounding MCP server, bring-your-own-URL-and-token
- * the same way a provider key is BYO (see `AiKeyStorage`). Never carries
- * the token itself, only whether one is set (`hasToken`) -- `url` is not a
- * secret (it's the address of a server, not a credential), which is why it
- * alone is safe to echo back.
+ * issue #111/#103's documentation-search MCP server, bring-your-own-URL the
+ * same way a provider key is BYO (see `AiKeyStorage`). `url` is not a secret
+ * (it's the address of a server, not a credential), which is why it is safe to
+ * echo back.
+ *
+ * No token, and no `hasToken` either. Authenticating is OAuth-only since issue
+ * #70, and whether that succeeded is `AiMcpOAuthStatus`'s question -- a second
+ * answer here could only agree with it or contradict it.
  */
 export interface AiMcpStatus {
   configured: boolean;
   url?: string;
-  hasToken: boolean;
 }
 
-/** Reads this app's one optional docs-grounding MCP server configuration. */
+/** Reads this app's one optional documentation-search MCP server configuration. */
 export function getAiMcpStatus(): Promise<AiMcpStatus> {
   return request<AiMcpStatus>('/api/ai/mcp');
 }
 
 /**
- * Stores `url` (and, optionally, `token`) as this app's docs-grounding MCP
- * server. An empty `token` clears any previously stored one -- see the
- * host's own `aiMCPPutRequest` doc comment for why "configure with no
- * token" and "remove the token I set before" are deliberately the same
- * request rather than two different ones.
+ * Stores `url` as this app's documentation-search MCP server. Authenticating to
+ * it is a separate, interactive step (`startAiMcpOAuth`); there is no token to
+ * pass here -- see the host's `aiMCPPutRequest` doc comment for why that field
+ * went away.
  */
-export function putAiMcp(url: string, token: string): Promise<AiMcpStatus> {
+export function putAiMcp(url: string): Promise<AiMcpStatus> {
   return request<AiMcpStatus>('/api/ai/mcp', {
     method: 'PUT',
-    body: JSON.stringify({ url, token }),
+    body: JSON.stringify({ url }),
   });
 }
 
-/** Removes the stored docs-grounding MCP server configuration entirely. */
+/** Removes the stored documentation-search MCP server configuration entirely. */
 export function deleteAiMcp(): Promise<AiMcpStatus> {
   return request<AiMcpStatus>('/api/ai/mcp', { method: 'DELETE' });
 }

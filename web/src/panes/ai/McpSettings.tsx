@@ -67,16 +67,18 @@ function DocsSearchHint() {
  * placeholder regardless, so in practice it just meant an unexplained third
  * party. Naming it is what lets someone say no.
  *
- * Two ways to authenticate, both BYO in the sense that matters -- neither
- * ships a credential in this repo:
+ * One way to authenticate: **Sign in** (`McpOAuthSection`), where the host runs
+ * a real OAuth 2.1 flow -- dynamic client registration, PKCE, a loopback
+ * callback -- and keeps the resulting tokens in the same keystore as a provider
+ * key, refreshing them itself. Verified against CircleCI's own docs MCP server
+ * (issue #103).
  *
- *  - **Sign in** (`McpOAuthSection`): the host runs a real OAuth 2.1 flow
- *    (dynamic client registration, PKCE, a loopback callback) and keeps the
- *    resulting tokens in the same keystore as a provider key, refreshing them
- *    itself. Verified to work against CircleCI's own docs MCP server --
- *    see issue #103.
- *  - **Paste a token**: for a server that issues long-lived tokens directly,
- *    or one whose authorization server has no dynamic client registration.
+ * There used to be a second way: a free-text field for a long-lived bearer
+ * token. Removed in issue #70. It duplicated the flow above for the server this
+ * app actually points at, while asking a user to hand this host a secret and
+ * asking this host to keep one. A server that authenticates some third way is a
+ * reason to support that scheme deliberately, not a reason to keep a generic
+ * token box on the chance it fits.
  */
 export function McpSettings() {
   const status = useAiStore((state) => state.mcpStatus);
@@ -98,17 +100,12 @@ export function McpSettings() {
   }, []);
 
   const urlInputId = useId();
-  const tokenInputId = useId();
   const [urlDraft, setUrlDraft] = useState('');
-  const [tokenDraft, setTokenDraft] = useState('');
 
   const handleSave = async () => {
     if (urlDraft.trim() === '') return;
-    const ok = await saveMcp(urlDraft.trim(), tokenDraft.trim());
-    if (ok) {
-      setUrlDraft('');
-      setTokenDraft('');
-    }
+    const ok = await saveMcp(urlDraft.trim());
+    if (ok) setUrlDraft('');
   };
 
   return (
@@ -138,13 +135,8 @@ export function McpSettings() {
           className="rounded-md border border-cc-border-strong p-3"
           data-testid="mcp-configured"
         >
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <Badge tone="success">Configured</Badge>
-              <span className="font-mono text-2xs text-cc-text-faint">
-                {status.hasToken ? 'token set' : 'no token'}
-              </span>
-            </div>
+          <div className="flex items-center gap-2">
+            <Badge tone="success">Configured</Badge>
           </div>
           <p className="mt-1 truncate font-mono text-2xs text-cc-text-muted">
             {status.url}
@@ -178,28 +170,13 @@ export function McpSettings() {
               placeholder="https://circleci.mcp.kapa.ai"
               value={urlDraft}
               onChange={(event) => setUrlDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void handleSave();
+              }}
               className="w-full rounded-md border border-cc-border-interactive bg-cc-panel-raised px-2.5 py-1.5 text-sm text-cc-text placeholder:text-cc-text-faint"
             />
           </div>
-          <div className="flex items-end gap-2">
-            <div className="flex-1">
-              <label htmlFor={tokenInputId} className="sr-only">
-                MCP server auth token (optional)
-              </label>
-              <input
-                id={tokenInputId}
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="Auth token (optional)"
-                value={tokenDraft}
-                onChange={(event) => setTokenDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') void handleSave();
-                }}
-                className="w-full rounded-md border border-cc-border-interactive bg-cc-panel-raised px-2.5 py-1.5 text-sm text-cc-text placeholder:text-cc-text-faint"
-              />
-            </div>
+          <div className="flex items-center justify-end">
             <Button
               variant="primary"
               size="sm"
