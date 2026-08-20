@@ -79,12 +79,35 @@ commands:
           # pins a different version and pnpm will not self-switch under
           # corepack. Activating the exact pinned version fixes that, and the
           # version is read from package.json so the two cannot drift.
+          #
+          # The shims go to a directory this job owns, rather than corepack's
+          # default of /usr/local/bin. The default started failing outright:
+          #
+          #   Internal Error: EACCES: permission denied,
+          #   unlink '/usr/local/bin/pnpm'
+          #
+          # because the executor image now ships its own pnpm at that path,
+          # owned by root, while the job runs as a non-root user -- so
+          # corepack cannot replace the symlink it wants to own. That broke
+          # every web job on every branch at once, with main still green from
+          # a run that predated the image change, which is exactly the shape
+          # of failure that reads as "my branch is broken" when it is not.
+          #
+          # --install-directory keeps this out of root-owned territory
+          # entirely, so the image shipping (or not shipping) a pnpm of its
+          # own stops mattering. Prepending to PATH in BASH_ENV rather than
+          # relying on the shim location means later steps resolve the
+          # activated version and not the image's.
           name: Activate the pinned pnpm version
           command: |
-            corepack enable
+            mkdir -p "$HOME/.local/bin"
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
+            export PATH="$HOME/.local/bin:$PATH"
+            corepack enable --install-directory "$HOME/.local/bin"
             PNPM_VERSION="$(node -p "require('./web/package.json').packageManager.split('@')[1]")"
             echo "Activating pnpm ${PNPM_VERSION}"
             corepack prepare "pnpm@${PNPM_VERSION}" --activate
+            command -v pnpm
             pnpm --version
       - run:
           name: Install web dependencies
