@@ -457,13 +457,28 @@ func (c *Cache) warmCertified(ctx context.Context) error {
 // warmFull performs the second warm stage: crawling the full public
 // registry, then publishing the result as Complete and persisting it to disk.
 //
-// It performs a single unfiltered crawl on purpose. The registry's
-// filter[visibility] parameter is accepted but ignored by the API: requesting
-// visibility=private returns the identical set as visibility=public, so
-// crawling both and concatenating duplicated every orb (and pushed certified
-// orbs out of the top search results). Each package already carries its own
-// is_private attribute, so one crawl yields both public and private orbs and
-// callers can distinguish them from the response itself.
+// It performs a single unfiltered crawl on purpose. Sent with no
+// filter[namespace_id], the registry's filter[visibility] parameter is
+// ignored outright: an earlier attempt at crawling public and private
+// separately got back the identical unfiltered set both times, and
+// concatenating the two duplicated every orb (and pushed certified orbs out
+// of the top search results). That reasoning still holds -- nothing here
+// disputes it -- and it's why this stays a single crawl.
+//
+// What this comment used to conclude from that does not hold: "each package
+// already carries its own is_private attribute, so one crawl yields both
+// public and private orbs and callers can distinguish them from the
+// response itself." That's false. An unfiltered crawl returns no private
+// orbs at all -- verified live, the circleci namespace's 79-orb unfiltered
+// listing and its 2 private orbs are disjoint sets, neither containing the
+// other. filter[visibility] does work, but only combined with
+// filter[namespace_id] (see circleci.ListOrbsOptions.Visibility), and this
+// crawl supplies neither for any namespace. Surfacing private orbs needs a
+// separate, namespace-scoped crawl (filter[namespace_id]+
+// filter[visibility]=private) per namespace the host's token can see --
+// that's issue #68 -- and closing it needs one thing this package doesn't
+// have yet: a way to enumerate which namespaces the token can see, since no
+// org-to-namespaces listing API exists to drive that from.
 //
 // It degrades gracefully rather than failing outright: if the crawl fails, the
 // certified-only set from warmCertified (or whatever the cache already held)

@@ -74,11 +74,28 @@ const (
 
 	// FilterPrivate scopes to orbs private to their namespace's
 	// organization, read from each package's own is_private attribute (see
-	// circleci.OrbPackage.Private). Note that visibility is a property of
-	// the package as returned, not something the API lets us ask for:
-	// filter[visibility] is accepted but ignored (see
-	// circleci.ListOrbsOptions.Visibility), so this scope can only ever be
-	// as complete as what the host's token was shown while crawling.
+	// circleci.OrbPackage.Private).
+	//
+	// An earlier version of this comment said filter[visibility] was
+	// accepted but ignored by the API outright. That was wrong: the filter
+	// does work, but only combined with filter[namespace_id] (see
+	// circleci.ListOrbsOptions.Visibility) -- and nothing in this codebase
+	// ever sends a namespace, because the cache's only crawl
+	// (Cache.warmFull) is deliberately unscoped.
+	//
+	// The practical consequence is worse than "incomplete," and worth
+	// stating plainly rather than softening: an unfiltered listing doesn't
+	// just drop visibility as a signal, it excludes private orbs entirely.
+	// Verified live against the circleci namespace -- 79 orbs with no
+	// filters, a disjoint 2 (both private) only when namespace_id and
+	// visibility=private are sent together. warmFull sends neither, so no
+	// private orb ever reaches the cache regardless of what the host's
+	// token can see, and FilterPrivate matches nothing in practice today.
+	// That is the actual subject of issue #68, not a hypothetical edge
+	// case. Closing it means teaching the warm path to also crawl
+	// namespace_id+visibility=private for namespaces the token can see --
+	// which in turn needs a way to learn those namespaces, since no
+	// org-to-namespaces listing API exists yet (see Cache.warmFull).
 	FilterPrivate Filter = "private"
 )
 
