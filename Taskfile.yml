@@ -159,6 +159,19 @@ tasks:
       - go run ./internal/guides/cmd/refresh-snapshot
       - go test ./internal/guides/...
 
+  mcp:check-tools:
+    desc: |
+      Diff internal/ai/circlecimcp's tool allowlist against a live tools/list
+      call to CircleCI's hosted MCP server. Needs CIRCLE_TOKEN. Deliberately
+      NOT part of `task check` or CI: CI must not depend on a live
+      third-party server being up, authenticated, and unchanged for a build
+      to pass -- this is a maintainer-run tripwire for that server's tools
+      drifting out from under internal/ai/circlecimcp's classification, the
+      same role guides:refresh plays for circleci-docs, not a correctness
+      gate every commit must clear.
+    cmds:
+      - go run ./internal/ai/circlecimcp/cmd/check-tools
+
   guides:refresh-image-index:
     desc: Rebuild internal/guides/imageindex/index.json from the head of circleci/circleci-docs
     cmds:
