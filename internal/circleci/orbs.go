@@ -239,11 +239,28 @@ type ListOrbsOptions struct {
 	// Visibility, when non-empty, is sent as filter[visibility] ("public" or
 	// "private").
 	//
-	// Caution: the registry currently accepts this filter but does not apply
-	// it — visibility=private returns the same set as visibility=public. Do
-	// not rely on it to partition the registry; read each package's Private
-	// field instead. It is kept here so callers can still send the filter if
-	// the API's behaviour changes.
+	// It does filter, but only alongside NamespaceID. Verified live against
+	// the circleci namespace: filter[namespace_id]=<ns> alone lists 79 orbs,
+	// none private; adding filter[visibility]=private to the same request
+	// lists 2 orbs, both private, and disjoint from the 79 -- so the
+	// parameter is read, not decorative. filter[visibility]=public is a
+	// no-op wherever it's sent, because public is what an unfiltered request
+	// already returns. Sent with no NamespaceID at all, filter[visibility]
+	// is ignored outright regardless of value. A value the API doesn't
+	// recognise (e.g. "bogusvalue") is silently accepted rather than
+	// rejected, and answers as if no visibility filter had been sent at all
+	// -- that validation gap is real and holds whether or not NamespaceID is
+	// set.
+	//
+	// An earlier version of this comment said the field was accepted but
+	// never applied, and pointed callers at each package's Private field
+	// instead. That was wrong: the field does partition the registry, and
+	// what made it look inert was testing it unscoped. The API's own
+	// documentation for filter[visibility] carries no description and no
+	// enum, which is exactly why the namespace-scoping requirement wasn't
+	// visible from the docs alone. Set this only together with NamespaceID;
+	// see orbs.FilterPrivate and Cache.warmFull (internal/orbs) for why
+	// nothing in this codebase does that yet (#68).
 	Visibility string
 
 	// Limit caps the number of packages returned on a single page. The API
