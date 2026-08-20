@@ -66,14 +66,17 @@
 //     "not sure yet, allow it" outcome available to return.
 //  2. The MCP tools/list response for every tool below already carries the
 //     spec's own readOnlyHint/destructiveHint annotations (verified live
-//     2026-08-07 against https://mcp.circleci.com/v1/mcp, see the per-tool
+//     2026-08-20 against https://mcp.circleci.com/v1/mcp, see the per-tool
 //     comments), and they agree with the classification below on every
 //     tool. That agreement is corroborating evidence this classification is
 //     right, not the mechanism enforcing it -- trusting the server's own
 //     hint at request time would mean a compromised or simply updated
 //     server could mark a new destructive tool readOnlyHint:true and this
 //     app would believe it. The list below is reviewed by a human each time
-//     it changes; the wire never is.
+//     it changes; the wire never is. `task mcp:check-tools` is that review's
+//     tripwire: it diffs this file against a live tools/list and fails
+//     when the two disagree, so drift is a command's exit code away from
+//     being noticed instead of resting on someone remembering to look.
 //
 // # How the list actually stops a model from calling a gated tool
 //
@@ -97,11 +100,14 @@
 // server (as opposed to CircleCI-Public/mcp-server-circleci, the
 // self-hosted npx package with a different, larger tool surface and
 // different tool names; this app never runs anything locally to reach
-// either). Verified live 2026-08-07 with a raw MCP initialize + tools/list
-// call authenticated by a personal API token as an `Authorization: Bearer`
-// header -- the same CIRCLE_TOKEN this app's other CircleCI-backed features
-// already read from the CLI plugin environment (see internal/host/env.go),
-// so no separate credential or sign-in flow is needed to reach it.
+// either). Verified live most recently 2026-08-20 with a raw JSON-RPC
+// tools/list call -- no initialize handshake required -- authenticated via
+// the `Circle-Token` header, the same CIRCLE_TOKEN this app's other
+// CircleCI-backed features already read from the CLI plugin environment
+// (see internal/host/env.go), so no separate credential or sign-in flow is
+// needed to reach it. `task mcp:check-tools` runs the identical call; see
+// its Taskfile.yml entry for why it is a manual, human-run target rather
+// than something CI or `task check` runs on every commit.
 package circlecimcp
 
 import "sort"
@@ -135,83 +141,154 @@ const (
 	ClassWrite Classification = "write"
 )
 
-// toolClassifications is the single source of truth for this package: every
-// tool this app has ever seen CircleCI's hosted MCP server advertise, and
-// what it does. A tool absent from this map entirely -- one the server adds
-// after this file is next updated -- is handled by IsReadOnly exactly like
-// an explicit ClassWrite entry: gated. There is no way to add a tool to
-// AllowedTools without adding it here first, by hand, which is the point.
+// toolClassifications is the single source of truth for this package. It
+// classifies all 24 tools CircleCI's hosted MCP server currently advertises
+// -- not a subset picked because they seemed relevant -- which is what
+// makes this map a complete mirror of the server's own tools/list response.
+// That completeness is exactly what makes `task mcp:check-tools` meaningful:
+// with every tool accounted for, a name that shows up in a live tools/list
+// but not here is unambiguous evidence of an upstream addition nobody has
+// reviewed yet, rather than something this file simply never bothered to
+// track. A tool absent from this map -- whether never seen or removed
+// below on purpose -- is handled by IsReadOnly exactly like an explicit
+// ClassWrite entry: gated. There is no way to add a tool to AllowedTools
+// without adding it here first, by hand, which is the point.
 //
-// Observed live 2026-08-07 three independent ways that agree on every name
-// and every classification: (1) an authenticated tools/list call against
-// https://mcp.circleci.com/v1/mcp using a real CIRCLE_TOKEN as an
-// Authorization: Bearer header, whose response's own MCP
-// readOnlyHint/destructiveHint annotations are quoted below per tool; (2)
-// CircleCI's own published documentation
-// (circleci.com/docs/guides/toolkit/circleci-mcp-overview/), which lists
-// the identical thirteen tools with identical descriptions; (3) calling the
-// read tools live (hello, list_runs, get_run, list_workflows) against a
-// real, already-authenticated session and inspecting the actual responses.
-// No write tool (cancel_workflow, rerun_workflow, download_usage_data) was
-// ever called against the live server while establishing this list --
-// their classification here rests on their description and the server's
-// own annotations, never on having exercised their effect.
+// Verified live 2026-08-20 with an authenticated tools/list call against
+// https://mcp.circleci.com/v1/mcp: the server advertised exactly these 24
+// tools, and the readOnlyHint/destructiveHint annotation quoted per tool
+// below is copied from that response. This update replaced a map that had
+// silently drifted from the server: three tools had been renamed upstream
+// (list_workflows -> list_run_workflows, list_jobs -> list_workflow_jobs,
+// list_artifacts -> list_job_artifacts) and a fourth, hello, had been
+// removed outright with no replacement. Naming a tool that no longer
+// exists in AllowedTools does not error -- internal/ai/anthropic's
+// mcpToolset only ever writes a Configs entry for a name it is given, so a
+// stale name just enables nothing -- so the drift produced no error
+// anywhere; the only symptom was the assistant being structurally unable
+// to list a run's workflows, a workflow's jobs, or a job's artifacts,
+// discovered only by comparing this file against a fresh tools/list by
+// hand. No write tool below (cancel_workflow, rerun_workflow,
+// download_usage_data, rollback_deploy_component) was ever called against
+// the live server while establishing this list -- their classification
+// rests on their description and the server's own annotations, never on
+// having exercised their effect.
 var toolClassifications = map[string]Classification{
-	// "Verify connectivity to the CircleCI MCP server." No input, no
-	// state read beyond the caller's own identity. Server annotation:
-	// readOnlyHint=true.
-	"hello": ClassRead,
+	// The pipeline chain: list_runs -> get_run -> list_run_workflows ->
+	// get_workflow -> list_workflow_jobs -> get_job. Each id feeds the
+	// next tool; entering mid-chain with an id already in hand is normal.
+
 	// Lists runs for a project or the caller's own runs. Server
 	// annotation: readOnlyHint=true.
 	"list_runs": ClassRead,
 	// Fetches one run's phase/outcome/VCS details by UUID. Server
 	// annotation: readOnlyHint=true.
 	"get_run": ClassRead,
-	// Lists the workflows belonging to a run. Server annotation:
-	// readOnlyHint=true.
-	"list_workflows": ClassRead,
+	// Lists the workflows belonging to a run. Renamed from list_workflows
+	// upstream (see this map's doc comment) -- this is the current name.
+	// Server annotation: readOnlyHint=true.
+	"list_run_workflows": ClassRead,
 	// Fetches one workflow's name/phase/outcome by UUID. Server
 	// annotation: readOnlyHint=true.
 	"get_workflow": ClassRead,
-	// Lists the jobs belonging to a workflow. Server annotation:
-	// readOnlyHint=true.
-	"list_jobs": ClassRead,
-	// Fetches one job's phase/outcome/per-step detail by UUID. Server
+	// Lists the jobs belonging to a workflow. Renamed from list_jobs
+	// upstream (see this map's doc comment) -- this is the current name.
+	// Server annotation: readOnlyHint=true.
+	"list_workflow_jobs": ClassRead,
+	// Fetches one job's phase/outcome/per-step detail by UUID, including
+	// each step's exit code -- the signal for which step failed. Server
 	// annotation: readOnlyHint=true.
 	"get_job": ClassRead,
+
+	// Job diagnostics: five tools that each take a job id and answer a
+	// different question about it. get_job above is the cheap first stop;
+	// these go deeper once it names a failed step.
+
 	// Fetches a job's step output -- the tool that answers "why did this
 	// build fail", this feature's whole motivating question. Server
 	// annotation: readOnlyHint=true.
 	"get_job_logs": ClassRead,
-	// Lists a job's persisted artifacts (paths and download URLs). Server
+	// Lists a job's test results, filtered to failures by default --
+	// far cheaper than get_job_logs when a failed step ran tests. Server
 	// annotation: readOnlyHint=true.
-	"list_artifacts": ClassRead,
-	// Lists a job's test results. Server annotation: readOnlyHint=true.
 	"list_job_tests": ClassRead,
+	// Lists a job's persisted artifacts (paths and download URLs).
+	// Renamed from list_artifacts upstream (see this map's doc comment)
+	// -- this is the current name. Server annotation: readOnlyHint=true.
+	"list_job_artifacts": ClassRead,
+	// Reports a job's actual CPU/memory usage against its resource
+	// class's limits -- the signal for an OOM kill or an oversized
+	// instance. Server annotation: readOnlyHint=true.
+	"get_job_resource_usage": ClassRead,
+
+	// Orbs, config, and the caller's own identity.
+
+	// Fetches a registry orb's metadata and published version history.
+	// Server annotation: readOnlyHint=true.
+	"get_orb": ClassRead,
+	// Fetches the YAML source of a specific orb version. Server
+	// annotation: readOnlyHint=true.
+	"get_orb_source": ClassRead,
+	// Compiles a config (the `circleci config validate` equivalent) and
+	// reports whether it is valid, without running anything. Server
+	// annotation: readOnlyHint=true.
+	"validate_config": ClassRead,
+	// Fetches the authenticated user's own profile. Server annotation:
+	// readOnlyHint=true.
+	"get_me": ClassRead,
+
+	// Deploys: a separate subsystem keyed on projects and orgs rather
+	// than pipeline ids. list_deployments answers "what shipped, and
+	// when" directly; the other four chain the way the pipeline tools
+	// do -- list_deploy_components/list_deploy_environments feed
+	// get_deploy_component/get_deploy_environment and
+	// list_deploy_component_versions.
+
+	// Lists a project's recent deployments newest-first. Server
+	// annotation: readOnlyHint=true.
+	"list_deployments": ClassRead,
+	// Lists a project's deployable units (services, applications,
+	// libraries). Server annotation: readOnlyHint=true.
+	"list_deploy_components": ClassRead,
+	// Lists an org's named deploy targets (e.g. production, staging).
+	// Server annotation: readOnlyHint=true.
+	"list_deploy_environments": ClassRead,
+	// Lists a deploy component's version history, newest-first. Server
+	// annotation: readOnlyHint=true.
+	"list_deploy_component_versions": ClassRead,
+	// Fetches a single deploy component by UUID. Server annotation:
+	// readOnlyHint=true.
+	"get_deploy_component": ClassRead,
+	// Fetches a single deploy environment by UUID. Server annotation:
+	// readOnlyHint=true.
+	"get_deploy_environment": ClassRead,
 
 	// Cancels a running workflow. Costs nothing further but stops work an
 	// organisation is already paying for and is visible to everyone
 	// watching that pipeline -- exactly the "acts, and is visible to a
 	// whole organisation" case issue #11 names explicitly. Server
-	// annotation: destructiveHint=true, idempotentHint=true; no
-	// readOnlyHint.
+	// annotation: readOnlyHint=false, destructiveHint=true,
+	// idempotentHint=true.
 	"cancel_workflow": ClassWrite,
 	// Reruns a workflow -- new compute spend, a new workflow record, and
 	// (issue #11's other named example) visible org-wide. Server
-	// annotation: destructiveHint=false, but critically still no
-	// readOnlyHint=true: the server itself does not claim this is safe to
-	// treat as a read.
+	// annotation: destructiveHint=false, but critically
+	// readOnlyHint=false: the server itself does not claim this is safe
+	// to treat as a read.
 	"rerun_workflow": ClassWrite,
 	// Gated on the server's own annotation, and on nothing else.
 	//
-	// Every one of the ten read tools above carries readOnlyHint=true.
-	// This one does not: it has destructiveHint=false and no readOnlyHint
-	// at all (verified against https://mcp.circleci.com/v1/mcp's own
-	// tools/list, 2026-08-07). CircleCI declining to call its own tool a
-	// read is the whole justification -- this package's rule is that
-	// anything not annotated read-only is gated, and inventing a
-	// different reason to reach the same answer would just be a reason
-	// that could turn out to be wrong.
+	// Every read tool above carries readOnlyHint=true. This one carries
+	// readOnlyHint=false and destructiveHint=false (verified against
+	// https://mcp.circleci.com/v1/mcp's own tools/list, 2026-08-20 --
+	// an earlier draft of this comment said the annotation was absent
+	// rather than explicitly false, which understated the case: the
+	// server does not merely decline to call this a read, it says it is
+	// not one). CircleCI declining to call its own tool a read is the
+	// whole justification -- this package's rule is that anything not
+	// annotated read-only is gated, and inventing a different reason to
+	// reach the same answer would just be a reason that could turn out to
+	// be wrong.
 	//
 	// It is worth being precise about what it is *not*, because an
 	// earlier version of this comment was not. It does not run a
@@ -223,6 +300,21 @@ var toolClassifications = map[string]Classification{
 	// background. So it is closer to a read than cancel_workflow or
 	// rerun_workflow are, and it is still not annotated as one.
 	"download_usage_data": ClassWrite,
+	// New since this map was last reviewed, and gated for the most
+	// direct reason this package has: its own description opens with
+	// "DANGEROUS -- redeploys production software". It rolls a deployed
+	// component back to an earlier version -- a real deploy, dispatched
+	// as a pipeline run or a release-agent command, that changes what is
+	// actually running in an environment such as production. Server
+	// annotation: readOnlyHint=false, destructiveHint=true. Unlike
+	// download_usage_data there is no case to be made that this is
+	// "closer to a read than it looks" -- everything about it, the
+	// server's annotation and its own description alike, says the
+	// opposite. Until this file was updated to classify all 24 tools it
+	// was excluded only by omission, the same way any tool this package
+	// has never seen is excluded; naming it here as ClassWrite records,
+	// on purpose, that this package has seen it and gated it deliberately.
+	"rollback_deploy_component": ClassWrite,
 }
 
 // IsReadOnly reports whether tool may be exposed to the assistant directly,
@@ -259,6 +351,27 @@ func AllowedTools() []string {
 		if class == ClassRead {
 			out = append(out, name)
 		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// AllClassifiedTools returns every tool name this package has ever
+// classified, read and write alike, sorted for deterministic output. Unlike
+// AllowedTools it is not part of the request-shaping path -- nothing in
+// internal/host or internal/ai/anthropic calls it. Its one consumer is
+// cmd/check-tools (see Taskfile.yml's mcp:check-tools), which diffs this
+// against a live tools/list to find tools this package classifies that the
+// server no longer advertises. AllowedTools alone can't show that side of
+// the drift: a write tool the server removed would never have appeared in
+// AllowedTools to begin with, so a diff against AllowedTools would miss it
+// silently -- which is exactly the shape a stale write-tool entry (harmless
+// today, but a false sense of having reviewed something upstream already
+// dropped) would take.
+func AllClassifiedTools() []string {
+	out := make([]string, 0, len(toolClassifications))
+	for name := range toolClassifications {
+		out = append(out, name)
 	}
 	sort.Strings(out)
 	return out
