@@ -57,6 +57,15 @@ type fakeLister struct {
 	certifiedErr error
 	publicErr    error
 
+	// publicRejectAboveLimit, when non-zero, makes the full-crawl branch
+	// simulate the API's observed page-size ceiling: any call whose
+	// opts.Limit exceeds this returns a 502 ResourceExhausted APIError with
+	// the exact body IsResourceExhausted matches, instead of publicErr or
+	// public. It lets tests exercise listWithPageSizeFallback without a real
+	// HTTP server, by scripting the same "too large" response the live API
+	// was observed to give at page[limit] above 500.
+	publicRejectAboveLimit int
+
 	publicUnblock chan struct{} // closed by the test to let the full crawl proceed.
 	// publicEntered, when non-nil, receives once as the full crawl begins.
 	// Reaching that point proves the certified stage has already finished, so
@@ -96,6 +105,9 @@ func (f *fakeLister) ListAllOrbPackages(ctx context.Context, opts circleci.ListO
 				return nil, ctx.Err()
 			}
 		}
+		if f.publicRejectAboveLimit > 0 && opts.Limit > f.publicRejectAboveLimit {
+			return nil, resourceExhaustedErr()
+		}
 		if f.publicErr != nil {
 			return nil, f.publicErr
 		}
@@ -103,6 +115,19 @@ func (f *fakeLister) ListAllOrbPackages(ctx context.Context, opts circleci.ListO
 			onPage(len(f.public))
 		}
 		return f.public, nil
+	}
+}
+
+// resourceExhaustedErr builds the exact *circleci.APIError shape observed
+// from the live orb registry when page[limit] is too large: HTTP 502, body
+// {"error":{"type":"ResourceExhausted","title":"Bad Gateway."}}. Used by
+// fakeLister to simulate that boundary without a real HTTP server.
+func resourceExhaustedErr() error {
+	return &circleci.APIError{
+		StatusCode: 502,
+		Method:     "GET",
+		Path:       "/api/v3/orb/packages",
+		Body:       `{"error":{"type":"ResourceExhausted","title":"Bad Gateway."}}`,
 	}
 }
 
@@ -557,6 +582,85 @@ func TestCache_PublicCrawlFailure_KeepsCertifiedResultsReady(t *testing.T) {
 	code, ok := circleci.StatusCode(status.Err)
 	assert.Assert(t, ok, "the warm error must still be classifiable as an API error")
 	assert.Equal(t, code, 500)
+}
+
+// TestCache_FullCrawl_DegradesPageSizeOnResourceExhausted covers the boundary
+// moving: if the API starts rejecting fullCrawlPageLimit as too large (the
+// shape circleci.IsResourceExhausted recognises), the crawl must retry at a
+// smaller page size rather than fail outright and lose the whole registry
+// listing -- the point of issue B's page-size fallback.
+func TestCache_FullCrawl_DegradesPageSizeOnResourceExhausted(t *testing.T) {
+	lister := &fakeLister{
+		certified:              []circleci.OrbPackage{},
+		public:                 []circleci.OrbPackage{pkgV("circleci/node", "n1", "1.0.0")},
+		publicRejectAboveLimit: 200, // rejects the starting 500 and its first halving (250); accepts 125 and below.
+	}
+
+	cache := orbs.New(lister, "", "example.com", nil)
+	cache.Start(context.Background())
+	waitWarm(t, cache.WarmDone(), 2*time.Second)
+
+	status := cache.Status()
+	assert.Assert(t, status.Complete, "the crawl must still complete once it degrades to a page size the API accepts")
+	assert.Assert(t, status.Err == nil, "a page-size retry that goes on to succeed must not leave a stale error behind")
+	assert.Equal(t, status.Count, 1)
+
+	// The full crawl must have tried more than once, at strictly decreasing
+	// limits, proving the fallback -- not a lucky first attempt -- is what
+	// produced the result above.
+	lister.mu.Lock()
+	var limits []int
+	for _, opts := range lister.calls {
+		if opts.Certified == nil {
+			limits = append(limits, opts.Limit)
+		}
+	}
+	lister.mu.Unlock()
+
+	assert.Assert(t, len(limits) >= 2, "expected at least one retry at a smaller page size, got calls %v", limits)
+	for i := 1; i < len(limits); i++ {
+		assert.Assert(t, limits[i] < limits[i-1], "page size must strictly decrease on each retry: %v", limits)
+	}
+	assert.Assert(t, limits[len(limits)-1] <= 200, "the crawl's last attempt must be a page size the fake accepts: %v", limits)
+}
+
+// TestCache_FullCrawl_GivesUpPastPageSizeFloor covers the other half of the
+// same design: if even the smallest page size the fallback will try is
+// rejected -- from this response alone, indistinguishable from an ordinary
+// outage that happens to share the same error shape -- the crawl must still
+// terminate and report the failure normally, rather than retry forever.
+func TestCache_FullCrawl_GivesUpPastPageSizeFloor(t *testing.T) {
+	lister := &fakeLister{
+		certified:              []circleci.OrbPackage{pkgV("circleci/node", "n1", "1.0.0")},
+		publicRejectAboveLimit: 50, // rejects every page size the fallback will try, including its floor.
+	}
+
+	cache := orbs.New(lister, "", "example.com", nil)
+	cache.Start(context.Background())
+	waitWarm(t, cache.WarmDone(), 2*time.Second)
+
+	status := cache.Status()
+	assert.Assert(t, !status.Complete, "a crawl that never finds an accepted page size must not be reported as complete")
+	assert.Assert(t, status.Err != nil, "the exhausted fallback must still report a failure, not silently vanish")
+	code, ok := circleci.StatusCode(status.Err)
+	assert.Assert(t, ok, "the failure must still be classifiable as an API error")
+	assert.Equal(t, code, 502)
+	assert.Equal(t, status.Count, 1, "the certified-only set from stage 1 must remain searchable despite the full-crawl failure")
+
+	// Bounded: the fallback must not have kept retrying below its floor, and
+	// its last attempt must be exactly that floor rather than some smaller
+	// guess.
+	lister.mu.Lock()
+	var limits []int
+	for _, opts := range lister.calls {
+		if opts.Certified == nil {
+			limits = append(limits, opts.Limit)
+		}
+	}
+	lister.mu.Unlock()
+
+	assert.Assert(t, len(limits) <= 10, "the page-size fallback must be bounded, not an unbounded retry loop: %v", limits)
+	assert.Equal(t, limits[len(limits)-1], 100, "the fallback's last attempt must be exactly its floor")
 }
 
 func TestCache_CertifiedStageFailure_StillAttemptsFullCrawl(t *testing.T) {
