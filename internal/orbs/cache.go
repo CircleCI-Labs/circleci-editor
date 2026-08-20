@@ -398,12 +398,18 @@ func (c *Cache) noteWarmError(err error) {
 //
 // This is deliberately bounded rather than an unconditional retry loop:
 // halving reaches pageSizeFloor in at most a few steps from either page-size
-// constant above, so an outage that happens to produce the same response
-// shape as a too-large page (see IsResourceExhausted's doc comment on why
-// that is possible) costs at most that many extra failed requests before
-// surfacing exactly the error it would have surfaced without this fallback
-// -- never a silent hang, and never success manufactured out of a real
-// outage.
+// constant above (three, from 500: 500 -> 250 -> 125 -> pageSizeFloor), so an
+// outage that happens to produce the same response shape as a too-large page
+// (see IsResourceExhausted's doc comment on why that is possible) costs at
+// most that many extra failed logical calls before surfacing exactly the
+// error it would have surfaced without this fallback -- never a silent hang,
+// and never success manufactured out of a real outage. Each of those calls is
+// itself up to maxAttempts (3, client.go) real HTTP requests, not one: the
+// client retries a 5xx with backoff before a logical call is allowed to fail
+// at all, so the true worst-case network cost of the degradation is roughly
+// three times the step count above, not one request per step. Even tripled,
+// it is a handful of requests against a 15-minute (full crawl) or 30-second
+// (certified-only) budget -- see fullCrawlTimeout and certifiedWarmTimeout.
 func (c *Cache) listWithPageSizeFallback(ctx context.Context, opts circleci.ListOrbsOptions, startLimit int) ([]circleci.OrbPackage, error) {
 	limit := startLimit
 	for {

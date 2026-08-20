@@ -142,28 +142,39 @@ func TestAllowedTools_IsExactlyTheClassReadSet(t *testing.T) {
 // or a name carrying leading/trailing whitespace that would never match
 // anything the server actually sends in a tools/list response (and so would
 // silently classify nothing, exactly like this bug's stale names did).
+//
+// This walks circlecimcp.AllClassifiedTools() -- the real keys of
+// toolClassifications -- rather than knownReadTools/knownWriteTools, so a
+// malformed key actually added to the map (say "get_me " with a trailing
+// space) is what gets checked, and not just this file's own hand-typed copy
+// of what the map is supposed to hold.
 func TestClassifications_NoEmptyOrMalformedNames(t *testing.T) {
-	for _, tool := range append(append([]string{}, knownReadTools...), knownWriteTools...) {
+	for _, tool := range circlecimcp.AllClassifiedTools() {
 		assert.Assert(t, tool != "", "classified tool name must not be empty")
 		assert.Equal(t, tool, strings.TrimSpace(tool), "classified tool name %q must not carry surrounding whitespace", tool)
 	}
 }
 
-// TestClassifications_ReadAndWriteSetsAreDisjoint is the property a
-// classification map must never violate: no tool name may appear in both
-// knownReadTools and knownWriteTools, because Classify and IsReadOnly can
-// only return one answer for a given key -- a name present in both lists in
-// this test would just mean the test itself is wrong, but a name classified
-// both ways in toolClassifications proper is impossible (a Go map has one
-// value per key), so this pins the *test's* two lists agree with that
-// invariant rather than silently talking past each other.
+// TestClassifications_ReadAndWriteSetsAreDisjoint checks the real
+// toolClassifications data rather than a hand-typed copy of it: the read set
+// is AllowedTools(), and the write set is built independently by asking
+// Classify() about every name AllClassifiedTools() actually holds. A Go map
+// already guarantees one value per key, so this cannot catch two entries
+// literally sharing a key -- what it does catch is AllowedTools() and
+// Classify() disagreeing about some real tool, which knownReadTools and
+// knownWriteTools, being this file's own hand-typed guess at the map's
+// contents, could never have detected.
 func TestClassifications_ReadAndWriteSetsAreDisjoint(t *testing.T) {
-	write := make(map[string]bool, len(knownWriteTools))
-	for _, tool := range knownWriteTools {
-		write[tool] = true
+	write := make(map[string]bool)
+	for _, tool := range circlecimcp.AllClassifiedTools() {
+		class, ok := circlecimcp.Classify(tool)
+		assert.Assert(t, ok, "expected %q to be classified", tool)
+		if class == circlecimcp.ClassWrite {
+			write[tool] = true
+		}
 	}
-	for _, tool := range knownReadTools {
-		assert.Assert(t, !write[tool], "tool %q listed as both read and write", tool)
+	for _, tool := range circlecimcp.AllowedTools() {
+		assert.Assert(t, !write[tool], "tool %q is returned by AllowedTools() but Classify reports it ClassWrite", tool)
 	}
 }
 
