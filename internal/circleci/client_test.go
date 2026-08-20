@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"gotest.tools/v3/assert"
@@ -111,4 +112,64 @@ func TestIsNotFound_StatusCode(t *testing.T) {
 
 	_, ok = circleci.StatusCode(context.DeadlineExceeded)
 	assert.Assert(t, !ok)
+}
+
+// TestIsResourceExhausted guards the `&&` in IsResourceExhausted, not just its
+// happy path: the function exists to tell "the orb registry choked on this
+// page[limit]" apart from "CircleCI is having an outage that happens to
+// return 502s," and those two situations share a status code. If the body
+// check were ever dropped (or loosened to `||`), an ordinary 502 outage would
+// be misread as a page-size problem and the orb crawl would burn its retry
+// budget halving page size for no reason instead of just surfacing the
+// outage.
+func TestIsResourceExhausted(t *testing.T) {
+	const resourceExhaustedBody = `{"error":{"type":"ResourceExhausted","title":"Bad Gateway."}}`
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "502 with the ResourceExhausted body marker",
+			err:  &circleci.APIError{StatusCode: http.StatusBadGateway, Body: resourceExhaustedBody},
+			want: true,
+		},
+		{
+			// The case that matters: a plain 502 gateway outage must not be
+			// read as "the page was too large," or an unrelated outage turns
+			// into a pointless page-size-halving loop.
+			name: "502 with an unrelated body is not resource exhaustion",
+			err:  &circleci.APIError{StatusCode: http.StatusBadGateway, Body: "<html><body><h1>502 Bad Gateway</h1></body></html>"},
+			want: false,
+		},
+		{
+			name: "502 with a different JSON error type is not resource exhaustion",
+			err:  &circleci.APIError{StatusCode: http.StatusBadGateway, Body: `{"error":{"type":"Unavailable","title":"Bad Gateway."}}`},
+			want: false,
+		},
+		{
+			name: "the marker in a non-502 status is not resource exhaustion",
+			err:  &circleci.APIError{StatusCode: http.StatusInternalServerError, Body: resourceExhaustedBody},
+			want: false,
+		},
+		{
+			name: "a non-APIError is never resource exhaustion",
+			err:  errors.New("dial tcp: connection refused"),
+			want: false,
+		},
+		{
+			// errors.As must see through wrapping, since every Client method
+			// wraps what it returns (see TestIsNotFound_StatusCode above).
+			name: "a wrapped APIError is still detected via errors.As",
+			err:  fmt.Errorf("listing orb packages: %w", &circleci.APIError{StatusCode: http.StatusBadGateway, Body: resourceExhaustedBody}),
+			want: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, circleci.IsResourceExhausted(tc.err), tc.want)
+		})
+	}
 }
