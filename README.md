@@ -60,7 +60,7 @@ It does make outbound requests, each for a feature you invoke:
 | `hub.docker.com` | Listing available tags for a Docker image | None |
 | `api.github.com` | Checking whether the bundled CircleCI documentation snapshot is out of date | None |
 | `api.anthropic.com` | The AI pane, and only when you press Send | The AI key you configured |
-| `circleci.mcp.kapa.ai` | Searching CircleCI's published documentation, if you switch it on in the AI pane. Run by Kapa, a documentation search service that indexes CircleCI's public docs; your question is sent there to search against, your config contents are not | A token from its browser sign-in |
+| `circleci.mcp.kapa.ai` | Searching CircleCI's published documentation, if you switch it on in the AI pane. Run by Kapa — the service behind the assistant on CircleCI's own documentation site — which indexes CircleCI's public docs; your question is sent there to search against, your config contents are not | A token from its browser sign-in |
 
 Validation deliberately sends your config to CircleCI's own compiler rather than
 approximating it locally — that is what makes the result authoritative rather
@@ -359,6 +359,7 @@ subject to change without notice. Specifically:
 | `Error: no web interface embedded` on startup, nothing opens | The binary was built with `go install` or a bare `go build`, without the web build first | Run `task build` (which builds the web app before the Go binary), or use one of [Installation](#installation)'s other options. |
 | Orb search returns few or no results right after startup | The local orb registry cache is still warming | Wait a few seconds and search again — certified orbs are searchable almost immediately, and the full registry crawl fills in in the background. |
 | Browser tab still open after Ctrl-C, still lets you type | Ctrl-C stops the local server, but doesn't close browser windows it opened | Within a few seconds the tab shows a blocking "Connection lost" notice; if you had unsaved changes, it offers to download or copy them first. |
+| Run isn't available for an unversioned config | The organization setting "Trigger pipelines with unversioned config" is off. It's off by default for every organization — deliberately, since it lets a pipeline run config that was never committed — so this is usually not a bug | Ask an org admin to turn it on. It overrides any per-project setting, so check it first; the editor's Run status names which of the two (organization or project) is the blocker. |
 
 ## Development
 

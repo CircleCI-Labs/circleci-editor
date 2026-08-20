@@ -14,10 +14,27 @@ import { useAiStore } from '~/state/aiStore';
  * placeholder. Being asked to connect to an outside service you cannot name is
  * a reasonable thing to refuse.
  *
- * So: what the protocol is, who the default server belongs to, and what
- * actually leaves the machine. No pitch -- the point is that a user can decide,
- * which means the sentence about their questions being sent has to be as plain
- * as the rest.
+ * Naming Kapa alone didn't fix that, though: Rosie Yohannan, who owns
+ * CircleCI's documentation, said customers don't know the service by that
+ * name -- they know CircleCI's docs site has an assistant that answers
+ * questions, because that's the thing they've actually clicked on. So this
+ * names Kapa as the service behind that assistant, which is what makes the
+ * name mean anything.
+ *
+ * Note what is claimed and what is not: that Kapa runs CircleCI's docs
+ * assistant (stated by Rosie, and by the FE who set this up), not that this
+ * MCP endpoint is literally the same server or index that answers questions
+ * there. Nobody here verified that, and it is a stronger claim than the
+ * evidence supports. Deliberately not a claim about the button's exact label:
+ * nobody on this project has confirmed that string (the docs site's widget is
+ * JS-rendered and didn't show up in a plain fetch), so the wording below says
+ * what the assistant does rather than quoting text on a page nobody here has
+ * seen.
+ *
+ * So: what the protocol is, what a user has actually encountered, who runs
+ * the default server, and what actually leaves the machine. No pitch -- the
+ * point is that a user can decide, which means the sentence about their
+ * questions being sent has to be as plain as the rest.
  */
 function DocsSearchHint() {
   return (
@@ -28,8 +45,9 @@ function DocsSearchHint() {
         tool -- here, a documentation search index.
       </span>
       <span className="block">
-        The default server is run by <strong>Kapa</strong>, a documentation
-        search service, and indexes CircleCI's public documentation.
+        The default server is run by <strong>Kapa</strong> &mdash; the service
+        behind the assistant on CircleCI's own documentation site &mdash; and
+        indexes CircleCI's public documentation.
       </span>
       <span className="block text-cc-text-faint">
         With this on, your question is sent to that server to search against.
