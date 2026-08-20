@@ -30,25 +30,33 @@ import (
 // compileConfigPath is the CircleCI API v2 endpoint used to validate and
 // expand (compile) a config.
 //
-// A v3 equivalent exists now -- POST /api/v3/configs/compile, taking
-// {"data":{"attributes":{"config":"<yaml>"}}} and returning
-// {"data":{"id":...,"attributes":{"phase":"ended","outcome":"succeeded",
-// "compiled_config":"<yaml>"}}} -- and it was tried here. Verified working for
-// a plain config. But it takes no organization: an org UUID was tried at
-// data.attributes.owner_id, data.attributes.org_id, a JSON:API
-// data.relationships.org, and top-level owner_id, and all four produced the
-// same result as sending no organization at all -- a config using a URL orb
-// still came back "Orb https://... is not permitted by the organization's
-// URL orb allow-list", identical to the no-org baseline. The endpoint accepts
-// and silently ignores whatever it's given in those places.
+// A v3 equivalent exists -- POST /api/v3/configs/compile, taking
+// {"data":{"attributes":{"config":"<yaml>"},"references":{"org":{"id":"<uuid>"}}}}
+// and returning {"data":{"id":...,"attributes":{"phase":"ended",
+// "outcome":"succeeded","compiled_config":"<yaml>"}}} -- and it does accept
+// an organization: at data.references.org.id, echoed back the same way GET
+// /api/v3/orb/packages echoes a namespace at data.references.namespace.id
+// (see orbPackagesResponse in orbs.go). Confirmed against the live API: a
+// config using a URL orb gated by an org allow-list succeeds when
+// references.org.id names that org, and fails with the expected "not
+// permitted by the organization's URL orb allow-list" for a different org's
+// UUID -- the field is read, not ignored.
 //
-// Naming the organization is exactly what CompileRequest.OwnerID exists for
-// (#67/#72): without it, private orbs and org-scoped URL-orb allow-lists
-// cannot be resolved, and a config that compiles fine in CI is reported
-// invalid by this editor. Moving to v3 today would silently reintroduce that
-// bug for every org using either kind of orb, for a compile endpoint that
-// otherwise looks like a drop-in replacement. Stay on v2 until v3 can be told
-// which organization it's compiling for.
+// An earlier version of this comment said the opposite: that four
+// placements -- data.attributes.owner_id, data.attributes.org_id, a
+// JSON:API-style data.relationships.org, and top-level owner_id -- were all
+// tried and all silently ignored, and concluded v3 could not carry an
+// organization at all. That conclusion was wrong. The mistake was assuming
+// JSON:API's "relationships" spelling; v3 uses its own "references"
+// envelope instead, for both requests (here) and responses (orbs.go
+// already), so the evidence that the right shape existed was sitting
+// alongside the wrong guess the whole time.
+//
+// We still call v2 today regardless: nobody has done the migration work, not
+// because v3 can't carry an organization -- CompileRequest.OwnerID (#67/#72)
+// would need a home in the v3 request shape, and every caller and test that
+// assumes v2's request/response wire format would need updating alongside
+// it. Until that happens, v2 remains what's wired up.
 const compileConfigPath = "/api/v2/compile-config-with-defaults"
 
 // CompileRequest is the input to CompileConfig.
