@@ -370,6 +370,16 @@ Triggering is its own explicit action — it isn't part of saving, so saving you
 file never starts a build you didn't ask for. And if you'd rather commit first,
 that works too: the editor doesn't push for you, so save and use git as normal.
 
+**If Run isn't available, this is the first thing to check.** Unversioned runs
+need an organization setting, **"Trigger pipelines with unversioned config,"**
+switched on — and it's off by default for every organization. That's deliberate,
+not an oversight: it lets a pipeline run a config that was never committed to
+the repository, which is a meaningful change to an organization's security
+posture, so CircleCI leaves the decision to an org admin rather than opting
+anyone in. If you don't see Run available, an org admin most likely hasn't
+turned this on yet — the editor will tell you which of the organization or
+project setting is the blocker, since either can be the reason.
+
 ---
 
 ## 9. The AI assistant (optional)
@@ -425,9 +435,11 @@ Three terms, plainly:
 
 - **MCP** (Model Context Protocol) is an open standard for letting an assistant
   call an outside tool. Here the tool is a documentation search index.
-- **Kapa** is the documentation search service that runs the default server
-  (`circleci.mcp.kapa.ai`) and indexes CircleCI's public documentation. It is a
-  third party, not part of this editor and not CircleCI support.
+- **Kapa** runs the default server (`circleci.mcp.kapa.ai`) and indexes
+  CircleCI's public documentation. Kapa is the service behind the assistant on
+  CircleCI's own documentation site, so if you have asked that a question, this
+  is the same vendor under its own name. It is a third party, not part of this
+  editor and not CircleCI support.
 - **Sign in** runs a standard OAuth flow in your browser. There's no API key to
   find or paste; the editor stores the resulting token the same way it stores an
   AI provider key, and refreshes it for you.

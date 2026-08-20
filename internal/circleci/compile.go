@@ -28,9 +28,27 @@ import (
 )
 
 // compileConfigPath is the CircleCI API v2 endpoint used to validate and
-// expand (compile) a config. Note that config compilation is only available
-// on API v2 — it has no v3 equivalent — unlike orb endpoints, which are v3
-// only.
+// expand (compile) a config.
+//
+// A v3 equivalent exists now -- POST /api/v3/configs/compile, taking
+// {"data":{"attributes":{"config":"<yaml>"}}} and returning
+// {"data":{"id":...,"attributes":{"phase":"ended","outcome":"succeeded",
+// "compiled_config":"<yaml>"}}} -- and it was tried here. Verified working for
+// a plain config. But it takes no organization: an org UUID was tried at
+// data.attributes.owner_id, data.attributes.org_id, a JSON:API
+// data.relationships.org, and top-level owner_id, and all four produced the
+// same result as sending no organization at all -- a config using a URL orb
+// still came back "Orb https://... is not permitted by the organization's
+// URL orb allow-list", identical to the no-org baseline. The endpoint accepts
+// and silently ignores whatever it's given in those places.
+//
+// Naming the organization is exactly what CompileRequest.OwnerID exists for
+// (#67/#72): without it, private orbs and org-scoped URL-orb allow-lists
+// cannot be resolved, and a config that compiles fine in CI is reported
+// invalid by this editor. Moving to v3 today would silently reintroduce that
+// bug for every org using either kind of orb, for a compile endpoint that
+// otherwise looks like a drop-in replacement. Stay on v2 until v3 can be told
+// which organization it's compiling for.
 const compileConfigPath = "/api/v2/compile-config-with-defaults"
 
 // CompileRequest is the input to CompileConfig.

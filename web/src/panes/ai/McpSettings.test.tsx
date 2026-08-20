@@ -406,6 +406,14 @@ describe('explaining what this is', () => {
     );
     expect(await screen.findByText(/Kapa/)).toBeInTheDocument();
     expect(screen.getByText(/Model Context Protocol/)).toBeInTheDocument();
+    // Rosie Yohannan (owns CircleCI's docs): customers know this as the
+    // assistant on the docs site, not by the vendor's name -- so the hover
+    // has to lead with that experience for "Kapa" to mean anything.
+    expect(
+      screen.getByText(
+        /service\s+behind the assistant on CircleCI's own documentation site/,
+      ),
+    ).toBeInTheDocument();
     // The disclosure a user needs in order to decline, not just to consent.
     expect(
       screen.getByText(/your question is sent to that server/),
