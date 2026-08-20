@@ -228,6 +228,40 @@ func IsNotFound(err error) bool {
 	return false
 }
 
+// IsResourceExhausted reports whether err is an *APIError with StatusCode
+// 502 (Bad Gateway) whose body's JSON error type is "ResourceExhausted".
+//
+// This is the exact shape the orb registry (GET /api/v3/orb/packages) was
+// observed returning for a page[limit] above roughly 500, measured directly
+// against the live API on 2026-08-19: page[limit]=500 succeeded three times
+// running (~1s, exactly 500 items each), while 600, 700, and 1000 each came
+// back {"error":{"type":"ResourceExhausted","title":"Bad Gateway."}} every
+// time they were tried. internal/orbs uses this to decide when a crawl
+// should retry at a smaller page size instead of giving up outright.
+//
+// StatusCode 502 alone is deliberately not enough to trigger that retry: 502
+// is also the generic "something broke upstream" status, returned for
+// reasons that have nothing to do with what page[limit] was requested.
+// Treating any 502 (or any 5xx) as "page too large" would let an ordinary
+// outage get misread as a page-size problem. Requiring the same error body
+// the too-large case was actually observed to produce narrows that, though
+// not perfectly -- a genuine backend resource-exhaustion outage unrelated to
+// page size could plausibly produce the identical body, and there is no way
+// to tell the two apart from this response alone. That residual risk is why
+// the caller bounds how many times it retries on this signal rather than
+// trusting it indefinitely (see pageSizeFloor in internal/orbs): on a real
+// outage that happens to look like this, the crawl wastes a handful of extra
+// requests walking the page size down to its floor and then fails exactly as
+// it would have without this function, reporting the same error it would
+// have reported anyway.
+func IsResourceExhausted(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.StatusCode == http.StatusBadGateway && strings.Contains(apiErr.Body, `"type":"ResourceExhausted"`)
+}
+
 // IsBadRequest reports whether err is an *APIError with StatusCode 400,
 // i.e. CircleCI understood the request but rejected what it carried.
 //

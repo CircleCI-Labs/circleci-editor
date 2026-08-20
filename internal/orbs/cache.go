@@ -48,10 +48,27 @@ const (
 	// relative to (issue #257).
 	cacheTTL = 24 * time.Hour
 
-	// certifiedPageLimit and fullCrawlPageLimit request the API's maximum
-	// page size, minimising the number of requests needed.
-	certifiedPageLimit = 100
-	fullCrawlPageLimit = 100
+	// certifiedPageLimit and fullCrawlPageLimit set the page[limit] this
+	// cache requests from the orb registry. This is *not* the API's
+	// documented maximum -- that is 1000 (page[limit]=1001 answers 400
+	// "Page limit must be at most 1000") -- because the API does not
+	// reliably serve anywhere near that. Measured directly against the live
+	// API on 2026-08-19: page[limit]=500 succeeded three times running
+	// (HTTP 200, exactly 500 items, ~1.0s each), while 600, 700, and 1000
+	// each failed 502 ResourceExhausted every time they were tried. 500 is
+	// therefore the largest size confirmed to work, not a documented limit
+	// -- upstream could move this boundary either way without notice, which
+	// is what listWithPageSizeFallback (below) exists to survive.
+	certifiedPageLimit = 500
+	fullCrawlPageLimit = 500
+
+	// pageSizeFloor is the smallest page[limit] listWithPageSizeFallback
+	// will retry at before giving up and reporting the failure like any
+	// other crawl error. It equals this cache's page size before this
+	// change -- a size with a long track record of actually working -- so
+	// falling back this far means falling back to known-good ground, not
+	// guessing further downward.
+	pageSizeFloor = 100
 
 	// certifiedWarmTimeout bounds the "instant" first stage of Start (one
 	// request for the certified orbs) so a slow or unreachable API cannot
@@ -60,11 +77,12 @@ const (
 	certifiedWarmTimeout = 30 * time.Second
 
 	// fullCrawlTimeout bounds the background crawl of the full registry
-	// (~64 requests at fullCrawlPageLimit for the ~6,400-orb public
-	// registry, plus a private-orb pass). It exists only to guarantee
-	// eventual termination if the API becomes unresponsive mid-crawl;
-	// ordinary Start/shutdown cancellation (via ctx) is the normal way this
-	// stops early.
+	// (~13 requests at fullCrawlPageLimit for the ~6,400-orb public
+	// registry, or up to ~64 if listWithPageSizeFallback has degraded all
+	// the way to pageSizeFloor, plus a private-orb pass). It exists only to
+	// guarantee eventual termination if the API becomes unresponsive
+	// mid-crawl; ordinary Start/shutdown cancellation (via ctx) is the
+	// normal way this stops early.
 	fullCrawlTimeout = 15 * time.Minute
 )
 
@@ -145,12 +163,13 @@ type Status struct {
 //
 //  1. Start fetches the certified orbs (one request, ~79 orbs at the time
 //     of writing) synchronously and marks the cache Ready.
-//  2. Start then crawls the full public registry (~6,400 orbs, ~64
-//     requests) in the background, and separately attempts to include
-//     private orbs (best-effort: a permissions error there is logged, not
-//     fatal). Once that finishes, the result atomically replaces the
-//     certified-only set and the cache is marked Complete, and persisted to
-//     disk for next time.
+//  2. Start then crawls the full public registry (~6,400 orbs, ~13
+//     requests at fullCrawlPageLimit, more if the API's page-size ceiling
+//     forces a fallback -- see listWithPageSizeFallback) in the background,
+//     and separately attempts to include private orbs (best-effort: a
+//     permissions error there is logged, not fatal). Once that finishes,
+//     the result atomically replaces the certified-only set and the cache
+//     is marked Complete, and persisted to disk for next time.
 //
 // A Search call never blocks on the background crawl.
 type Cache struct {
@@ -328,8 +347,9 @@ func (c *Cache) markWarming() {
 // It is a no-op whenever a crawl (started by Start or an earlier Refresh) is
 // already Warming, checked and set atomically under the same lock so two
 // overlapping calls can never both decide to start one. That matters here
-// specifically: this crawl is ~64 requests over up to fullCrawlTimeout, and a
-// refresh button sitting next to it is exactly the kind of control someone
+// specifically: this crawl is ~13 requests (more if degraded to a smaller
+// page size) over up to fullCrawlTimeout, and a refresh button sitting next
+// to it is exactly the kind of control someone
 // double-clicks or, worse, a second browser tab triggers concurrently. Either
 // way, the currently-published packages are left exactly as they are while
 // the new crawl runs -- Search keeps serving them, stale-labelled if they
@@ -361,6 +381,50 @@ func (c *Cache) noteWarmError(err error) {
 	c.status.Err = err
 }
 
+// listWithPageSizeFallback calls client.ListAllOrbPackages with opts.Limit
+// set to startLimit, and, if that fails in a way circleci.IsResourceExhausted
+// recognises as the API rejecting the requested page size, retries the whole
+// crawl at half that page size -- repeating down to pageSizeFloor, below
+// which a further failure is returned like any other crawl error instead of
+// retried again.
+//
+// It restarts the crawl from page one on each retry rather than resuming
+// mid-crawl at a smaller size: ListAllOrbPackages already discards whatever
+// pages it had gathered before a failing one (any page error makes it
+// return nil, err for the whole call), so there is nothing partial to
+// resume from, and re-crawling from the start is also the only way to get a
+// single, consistent page size across the whole result rather than a
+// patchwork of sizes stitched together mid-list.
+//
+// This is deliberately bounded rather than an unconditional retry loop:
+// halving reaches pageSizeFloor in at most a few steps from either page-size
+// constant above, so an outage that happens to produce the same response
+// shape as a too-large page (see IsResourceExhausted's doc comment on why
+// that is possible) costs at most that many extra failed requests before
+// surfacing exactly the error it would have surfaced without this fallback
+// -- never a silent hang, and never success manufactured out of a real
+// outage.
+func (c *Cache) listWithPageSizeFallback(ctx context.Context, opts circleci.ListOrbsOptions, startLimit int) ([]circleci.OrbPackage, error) {
+	limit := startLimit
+	for {
+		opts.Limit = limit
+		pkgs, err := c.client.ListAllOrbPackages(ctx, opts, nil)
+		if err == nil {
+			return pkgs, nil
+		}
+		if limit <= pageSizeFloor || !circleci.IsResourceExhausted(err) {
+			return nil, err
+		}
+
+		next := limit / 2
+		if next < pageSizeFloor {
+			next = pageSizeFloor
+		}
+		c.logf("orbs: page size %d rejected by the API, retrying the crawl at %d: %v", limit, next, err)
+		limit = next
+	}
+}
+
 // warmCertified performs the first warm stage: fetching every certified
 // orb in a single request and publishing it as the cache's initial,
 // Ready-but-not-Complete content.
@@ -369,10 +433,9 @@ func (c *Cache) warmCertified(ctx context.Context) error {
 	defer cancel()
 
 	certified := true
-	pkgs, err := c.client.ListAllOrbPackages(ctx, circleci.ListOrbsOptions{
+	pkgs, err := c.listWithPageSizeFallback(ctx, circleci.ListOrbsOptions{
 		Certified: &certified,
-		Limit:     certifiedPageLimit,
-	}, nil)
+	}, certifiedPageLimit)
 	if err != nil {
 		return err
 	}
@@ -406,9 +469,7 @@ func (c *Cache) warmFull(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, fullCrawlTimeout)
 	defer cancel()
 
-	all, err := c.client.ListAllOrbPackages(ctx, circleci.ListOrbsOptions{
-		Limit: fullCrawlPageLimit,
-	}, nil)
+	all, err := c.listWithPageSizeFallback(ctx, circleci.ListOrbsOptions{}, fullCrawlPageLimit)
 	if err != nil {
 		if ctx.Err() != nil {
 			return // Shutting down; nothing more to do.

@@ -47,8 +47,10 @@ const orbSourcePathFmt = "/api/v3/orb/versions/%s/source"
 // maxOrbPackagePages bounds how many pages ListAllOrbPackages will follow
 // before giving up, guarding against an API bug (or a cursor that never
 // terminates) turning a crawl into an infinite loop. The full public
-// registry is roughly 6,400 orbs, i.e. ~64 pages at the maximum page size of
-// 100; this cap leaves generous headroom above that.
+// registry is roughly 6,400 orbs: ~13 pages at the 500-item page size
+// internal/orbs currently requests, or up to ~64 pages if it has fallen back
+// to the smallest page size it retries at (see pageSizeFloor in
+// internal/orbs/cache.go). This cap leaves generous headroom above either.
 const maxOrbPackagePages = 500
 
 // ErrOrbNotFound is returned by GetOrbPackageByName when the CircleCI API
@@ -244,8 +246,12 @@ type ListOrbsOptions struct {
 	// the API's behaviour changes.
 	Visibility string
 
-	// Limit caps the number of packages returned on a single page (the
-	// API's own maximum is 100). Zero leaves it unset, letting the API
+	// Limit caps the number of packages returned on a single page. The API
+	// advertises a maximum of 1000 (page[limit]=1001 answers 400 "Page limit
+	// must be at most 1000"), but does not reliably serve that: see
+	// IsResourceExhausted (this package) and pageSizeFloor
+	// (internal/orbs/cache.go) for what was actually measured and how a
+	// caller degrades when it changes. Zero leaves it unset, letting the API
 	// apply its own default.
 	Limit int
 
