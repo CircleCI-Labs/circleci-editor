@@ -61,7 +61,7 @@
   "volta": {
     "node": "22.20.0"
   },
-  "packageManager": "pnpm@10.34.4",
+  "packageManager": "pnpm@10.34.6",
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild"
